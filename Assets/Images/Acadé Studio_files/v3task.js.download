@@ -1,0 +1,2749 @@
+function createEditorCell(el, value, images, config) {
+    let ret = {}
+    let readonly = config['readonly'] || false;
+    let aimagic = config['aimagic'] || false;
+    let saveCallback = config['saveCallback'] || (function() { })
+    let path = config['path'] || null;
+    let saveState = config['saveState'] || null;
+    let revealConfig = config['revealConfig'] || null;
+
+    let show = null;
+    let multiling = true;
+    let usePath = true;
+    let btnsHolder = null;
+    if (typeof value == "string") {
+        multiling = false;
+        usePath = false;
+        show = "itself"
+    } else if (value["nc_multiling_cell"] !== undefined) {
+        if (value["translated"] !== undefined) {
+            show = "translated"
+        } else {
+            show = "original"
+        }
+    } else if (value["nc_newtext_cell"] !== undefined) {
+        multiling = false;
+        show = "text"
+    }
+
+    if (multiling) {
+        btnsHolder = el.appendChild(document.createElement('div'));
+    }
+
+    let holder = el.appendChild(document.createElement('div'));
+    holder.style.position = 'relative';
+    holder.style.left = '0px';
+    holder.style.top = '0px';
+
+    function getText() {
+        if (show == "itself") {
+            return value;
+        } else {
+            return value[show]
+        }
+    }
+
+    let lastRevealIds = [];
+    function updateValues(backward) {
+        if (backward) {
+            if (show == "itself") {
+                value = textarea.value;
+            } else {
+                value[show] = textarea.value
+            }
+
+        } else {
+            textarea.value = getText()
+        }
+        let out = v3HTML(preview, getText(), images, revealConfig);
+        if (revealConfig && revealConfig['onupdate']) {
+            if (out['revealIds'].length != lastRevealIds.length || !(out['revealIds'].every((el, idx) => el == lastRevealIds[idx]))) {
+                lastRevealIds = out['revealIds'];
+                revealConfig['onupdate'](out['revealIds'])
+            }
+        }
+
+        if (ret['reposition'] !== undefined) {
+            ret['reposition']()
+        }
+    }
+
+    let textarea = document.createElement('textarea');
+    if (!readonly) {
+        holder.appendChild(textarea);
+
+        textarea.style.position = 'absolute';
+        textarea.style.margin = '0px';
+        textarea.style.left = '0px';
+        textarea.style.top = '0px';
+        textarea.style.boxSizing = 'border-box';
+        textarea.readOnly = !!aimagic
+
+        textarea.addEventListener('keydown', function(event) {
+            // Check if either Ctrl+B or Ctrl+I was pressed
+            if (event.ctrlKey && (event.key === 'b' || event.key === 'i' || event.key == '^' || event.key == '_')) {
+                // Prevent the default action to avoid toggling browser's default behavior
+                event.preventDefault();
+
+                // Get the start and end positions of the selected text
+                let start = this.selectionStart;
+                let end = this.selectionEnd;
+
+                // Get the selected text
+                let selectedText = this.value.substring(start, end);
+
+                // Determine the tag based on the key pressed
+                let tag = ({'b': 'b', 'i': 'i', '^': 'sup', '_': 'sub'})[event.key];
+
+                // Wrap the selected text with the appropriate tag
+                let wrappedText = `<${tag}>${selectedText}</${tag}>`;
+
+                // Replace the selected text with the wrapped text
+                this.value = this.value.substring(0, start) + wrappedText + this.value.substring(end);
+
+                // Update the cursor position
+                this.selectionStart = this.selectionEnd = start + wrappedText.length;
+
+                return false;
+            }
+        });
+    }
+    let preview = holder.appendChild(document.createElement('div'));
+
+    preview.style.boxSizing = 'border-box';
+    preview.style.padding = '5px';
+
+    ret['updateValues'] = updateValues;
+
+    if (!readonly) {
+        preview.style.position = 'absolute';
+        preview.style.top = '0px';
+
+        function reposition() {
+            let w = holder.offsetWidth;
+            textarea.style.width = Math.min(Math.floor(w / 2), 600) + 'px';
+            preview.style.width = Math.ceil(w / 2) - 10 + 'px';
+            preview.style.left = Math.min(Math.floor(w / 2), 600) + 10 + 'px';
+
+            let h = Math.max(200, preview.offsetHeight);
+
+            textarea.style.height = h + 'px';
+            holder.style.height = h + 'px';
+        }
+
+        textarea.onkeyup = function() {
+            if (usePath) {
+                if (!aimagic) saveUpdate({"multiling": {"action": "save_" + show, "value": textarea.value, "path": path}}, true, saveState)
+            }
+
+            updateValues(true)
+            if (!aimagic) saveCallback(textarea.value);
+            reposition();
+        }
+
+        window.addEventListener('resize', reposition)
+
+        textarea.value = getText();
+
+        requestAnimationFrame(reposition);
+        requestAnimationFrame(() => { requestAnimationFrame(reposition) });
+
+        // Give some time to load images
+        setTimeout(reposition, 500);
+
+        ret['reposition'] = reposition
+    } else {
+        let latex = true;
+        preview.onclick = function() {
+            latex = !latex;
+            if (latex) {
+                updateValues()
+            } else {
+                preview.innerText = getText()
+            }
+        }
+    }
+
+    updateValues()
+
+    if (multiling && !readonly) {
+        function redrawBtns() {
+            btnsHolder.innerHTML = ''
+            let small = btnsHolder.appendChild(document.createElement('small'))
+            if (value["translation_job_id"] !== undefined) {
+                if (value["translation_job_id"] == -1) {
+                    small.innerHTML = "<b>Original</b> :: <i>Sending request...</i>"
+                } else {
+                    small.innerHTML = "<b>Original</b> :: <i>Translating to English...</i>"
+                }
+                let f = function() {
+                    saveUpdate({"multiling": {"action": "check_translation", "path": path}}, true, saveState, function(x) { if (x['translated'] !== undefined) { value["translated"] = x['translated']; delete value["translation_job_id"]; show = 'translated'; redrawBtns(); updateValues() } else { setTimeout(f, 2500) } })
+                }
+                setTimeout(f, 1000)
+            } else if (show == "original") {
+                small.innerHTML = "<b>Original</b> :: "
+                if (value["translated"] !== undefined) {
+                    let a = small.appendChild(document.createElement('span'))
+                    a.innerText = 'English'
+                    clickify([a])
+                    a.onclick = function() {
+                        show = "translated";
+                        updateValues()
+                        redrawBtns()
+                    }
+                    appendHTML(small, " :: ")
+                }
+                let a = small.appendChild(document.createElement('span'))
+                a.innerText = (value["translated"] !== undefined) ? 'Re-Translate' : 'Translate to English'
+                clickify([a])
+                a.onclick = function() {
+                    if (value["translated"] !== undefined && !confirm("Do you want to translate to English again? The existing English text, and any changes to it, will be lost")) {
+                        return
+                    }
+                    value["translation_job_id"] = -1;
+                    redrawBtns();
+                    saveUpdate({"multiling": {"action": "translate", "path": path}}, true, saveState, function(x) { if (value['stop']) { return }; value["translation_job_id"] = x['job_id']; redrawBtns() })
+                }
+            } else {
+                let a = small.appendChild(document.createElement('span'))
+                a.innerText = 'Original'
+                clickify([a])
+                appendHTML(small, " :: <b>English</b>")
+                a.onclick = function() {
+                    show = "original";
+                    updateValues()
+                    redrawBtns()
+                }
+            }
+        }
+        redrawBtns()
+    }
+
+    ret['add_translate_elems'] = function(el) {
+        el.innerHTML = '&nbsp;'
+        let a = el.appendChild(document.createElement('span'));
+        clickify([a])
+        a.innerText = 'Translate to English'
+        a.onclick = function() {
+            if (textarea.value.trim() == '') {
+                alert('Nothing to translate');
+            } else {
+                el.innerHTML = '&nbsp;<i>Translating...</i>'
+                v3do({'action': 'translate', 'text': textarea.value}).then(function(job_id_j) {
+                    if (job_id_j['stop']) {
+                        el.innerHTML = '';
+                        return
+                    }
+                    let job_id = job_id_j['job_id']
+                    let check = function() {
+                        v3do({'action': 'check_translation', 'job_id': job_id}).then(function(j) {
+                            if (j['result']) {
+                                el.innerHTML = ''
+                                value = j['result']
+                                textarea.value = value
+                                updateValues()
+                                saveCallback(value);
+                                reposition()
+                            } else {
+                                setTimeout(check, 2000)
+                            }
+                        })
+                    }
+                    setTimeout(check, 1000)
+                })
+            }
+        }
+    }
+
+    return ret
+}
+
+function createPuzzleRevealConfigEditor(el, readonly, revealIds, answers, puzzleConfig, callback, path, saveState) {
+    let span = el.appendChild(document.createElement('span'))
+    function redraw() {
+        span.innerHTML = ''
+        let table = span.appendChild(document.createElement('table'));
+        let tbody = table.appendChild(document.createElement('tboby'));
+        for (let id of revealIds) {
+            if (puzzleConfig[id] === undefined) {
+                puzzleConfig[id] = {'kind': 'Imprecise'}
+            }
+            let tr = tbody.appendChild(document.createElement('tr'));
+            let td1 = tr.appendChild(document.createElement('td'));
+            let td2 = tr.appendChild(document.createElement('td'));
+            td1.innerText = id + ": ";
+            let s = td2.appendChild(document.createElement('select'));
+            s.style.width = '200px'
+            s.disabled = readonly;
+            let options = ["Imprecise", "Precise", "Multiple Choice", "Imprecise Multiline"];
+            for (let option of options) {
+                let o = s.appendChild(document.createElement('option'));
+                o.innerText = option;
+
+                if (puzzleConfig[id]['kind'] == option) {
+                    o.selected = true;
+                }
+            }
+
+            if (puzzleConfig[id]['kind'] == 'Precise' || puzzleConfig[id]['kind'] == 'Imprecise' || puzzleConfig[id]['kind'] == 'Imprecise Multiline') {
+                let txt;
+                if (puzzleConfig[id]['kind'] == 'Imprecise Multiline') {
+                    appendHTML(td2, '\n')
+                    txt = td2.appendChild(document.createElement('textarea'))
+                    txt.rows = 5;
+                    txt.style.boxSizing = 'border-box'
+                    txt.style.width = '410px'
+                } else {
+                    txt = td2.appendChild(document.createElement('input'))
+                    txt.style.marginLeft = '10px'
+                    txt.style.boxSizing = 'border-box'
+                    txt.style.width = '200px'
+                }
+                txt.value = answers[id] || ''
+                txt.onkeyup = function() {
+                    answers[id] = txt.value;
+                    let update = {}
+                    update["puzzle_set_answer_" + id] = {"path": path, 'answer': txt.value}
+                    saveUpdate(update, true, saveState)
+                    callback(id);
+                }
+            } else if (puzzleConfig[id]['kind'] == 'Multiple Choice') {
+                if (puzzleConfig[id]['choices'] === undefined) { puzzleConfig[id]['choices'] = []; }
+                function saveMC() {
+                    let foundAnswer = false;
+                    for (let opt of puzzleConfig[id]['choices']) {
+                        if (opt == answers[id]) {
+                            foundAnswer = true;
+                        }
+                    }
+                    if (!foundAnswer) {
+                        if (puzzleConfig[id]['choices'].length == 0) {
+                            answers[id] = ''
+                        } else {
+                            answers[id] = puzzleConfig[id]['choices'][0]
+                        }
+                    }
+                    let update = {}
+                    update["puzzle_set_answer_" + id] = {"path": path, 'answer': answers[id], 'choices': puzzleConfig[id]['choices']}
+                    saveUpdate(update, true, saveState)
+                    callback(id);
+                }
+                let mcSelect = td2.appendChild(document.createElement('select'))
+                mcSelect.style.width = '200px'
+                mcSelect.style.marginLeft = '10px'
+                mcSelect.style.boxSizing = 'border-box'
+                for (let i = 0; i < puzzleConfig[id]['choices'].length; ++ i) {
+                    let option = mcSelect.appendChild(document.createElement('option'))
+                    option.innerText = puzzleConfig[id]['choices'][i];
+                    if (puzzleConfig[id]['choices'][i] == answers[id]) {
+                        option.selected = true;
+                    }
+                }
+                mcSelect.onchange = function() {
+                    answers[id] = puzzleConfig[id]['choices'][mcSelect.selectedIndex]
+                    saveMC();
+                }
+                appendHTML(td2, '\n')
+                for (let cord in puzzleConfig[id]['choices']) {
+                    let c = puzzleConfig[id]['choices'][cord];
+                    let e = td2.appendChild(document.createElement('small'));
+                    e.style.backgroundColor = '#F0F0F0';
+                    e.style.border = '1px solid #D0D0D0';
+                    e.style.borderRadius = '5px';
+                    e.style.padding = '0px 4px 0px 4px';
+                    e.innerText = c;
+                    e.style.marginLeft = '3px';
+                    e.appendChild(document.createElement('span')).innerHTML = '&nbsp;';
+                    if (!readonly) {
+                        let del = e.appendChild(document.createElement('span'));
+                        del.innerText = '×';
+                        del.style.cursor = 'pointer';
+                        del.style.color = 'gray';
+                        let localCord = cord;
+                        del.onclick = function() {
+                            for (let i = 0; i < puzzleConfig[id]['choices'].length; ++ i) {
+                                if (i > localCord) {
+                                    puzzleConfig[id]['choices'][i - 1] = puzzleConfig[id]['choices'][i];
+                                }
+                            }
+                            puzzleConfig[id]['choices'].pop();
+                            saveMC();
+                            redraw();
+                            callback(id);
+                        }
+                    }
+                }
+
+                if (!readonly) {
+                    let e = td2.appendChild(document.createElement('small'));
+                    e.style.backgroundColor = '#F0F0F0';
+                    e.style.color = 'gray';
+                    e.style.border = '1px solid #D0D0D0';
+                    e.style.borderRadius = '5px';
+                    e.style.padding = '0px 4px 0px 4px';
+                    e.style.marginLeft = '3px';
+                    e.style.cursor = 'pointer';
+                    e.innerText = '+';
+
+                    e.onclick = function() {
+                        let what = prompt();
+                        if (what !== null) {
+                            puzzleConfig[id]['choices'].push(what);
+                            saveMC();
+                            redraw();
+                            callback(id);
+                        }
+                    }
+                }
+            }
+
+            s.onchange = function() {
+                puzzleConfig[id]['kind'] = options[s.selectedIndex];
+                redraw();
+                saveUpdate({"puzzle_set_reveal_type": {"id": id, "path": path, 'kind': options[s.selectedIndex]}}, false, saveState)
+                callback();
+            }
+        }
+    }
+    redraw();
+}
+
+function createPuzzleEditor(el, puzzle, images, config) {
+    let ret = {}
+    let answerEditor = document.createElement('div')
+    let puzzleContent = puzzle.content;
+    let puzzleAnswers = puzzle.answers;
+    let puzzleConfig = puzzle.config;
+    let path = JSON.parse(JSON.stringify(config['path']))
+    let interactiveAnswers = {}
+
+    let editorCell;
+
+    ret['showToolbar'] = function(el) {
+        let a = el.appendChild(document.createElement('span'))
+        a.innerText = 'Hide all revealed answers'
+        clickify([a])
+        a.onclick = function() {
+            Object.keys(interactiveAnswers).forEach(key => delete interactiveAnswers[key]);
+            editorCell.updateValues();
+        }
+    }
+
+    let onclick = function(span, id_) {
+        interactiveAnswers[id_] = puzzleAnswers[id_] || ''
+        editorCell.updateValues()
+    };
+    let onupdate = function(revealIds) {
+        answerEditor.innerText = '';
+        let callback = function(id_) {
+            if (interactiveAnswers[id_] !== undefined) {
+                interactiveAnswers[id_] = puzzleAnswers[id_] || ''
+            }
+            editorCell.updateValues();
+        }
+        createPuzzleRevealConfigEditor(answerEditor, config['readonly'], revealIds, puzzleAnswers, puzzleConfig, callback, path, config['saveState'])
+    };
+    revealConfig = {'isEditor': true, 'answers': interactiveAnswers, 'onclick': onclick, 'onupdate': onupdate}
+    config['revealConfig'] = revealConfig;
+    config['path'] = JSON.parse(JSON.stringify(config['path']))
+    config['path'].push("content")
+    editorCell = createEditorCell(el, puzzleContent, images, config);
+    el.appendChild(answerEditor);
+
+    return ret;
+}
+
+function codeDiff(pre, old_code, new_code) {
+    let codes = [old_code, new_code];
+    let allLiness = [[], []];
+    let liness = [[], []];
+    let h = [[], []];
+    for (let i = 0; i < 2; ++ i) {
+        allLiness[i] = codes[i].split('\n');
+    }
+
+    let left = 0; let right = 0;
+    let l1 = allLiness[0].length;
+    let l2 = allLiness[1].length;
+    while (left < l1 && left < l2 && allLiness[0][left].trim() == allLiness[1][left].trim()) { ++ left }
+    while (left + right < l1 && left + right < l2 && allLiness[0][l1 - right - 1].trim() == allLiness[1][l2 - right - 1].trim()) { ++ right }
+    if (left == Math.max(l1, l2)) {
+        pre.textContent = '/* no code changes */'
+        return;
+    }
+    for (let i = left; i < l1 - right; ++ i) { liness[0].push(allLiness[0][i]) }
+    for (let i = left; i < l2 - right; ++ i) { liness[1].push(allLiness[1][i]) }
+
+    let dp = [];
+    for (let j = 0; j < liness[1].length; ++ j) {
+        h[1].push(1);
+    }
+        
+    for (let i = 0; i < liness[0].length; ++ i) {
+        h[0].push(1);
+        dp.push([]);
+        for (let j = 0; j < liness[1].length; ++ j) {
+            let val = 0;
+            if (i && dp[i - 1][j] > val) { val = dp[i - 1][j]; }
+            if (j && dp[i][j - 1] > val) { val = dp[i][j - 1]; }
+            if (liness[0][i].trim() == liness[1][j].trim()) {
+                if (i && j) newVal = dp[i - 1][j - 1] + 1;
+                else newVal = 1;
+                if (newVal > val) val = newVal;
+            }
+            dp[i].push(val);
+        }
+    }
+
+    let i = liness[0].length - 1;
+    let j = liness[1].length - 1;
+    while (i >= 0 && j >= 0) {
+        if (liness[0][i].trim() == liness[1][j].trim() && (i && j && dp[i][j] == dp[i - 1][j - 1] + 1 || (!i || !j) && dp[i][j] == 1)) {
+            h[0][i] = 0;
+            h[1][j] = 0;
+            -- i; --j;
+        } else if (i && dp[i][j] == dp[i - 1][j]) -- i;
+        else -- j;
+    }
+
+    if (left > 3) {
+        let span = pre.appendChild(document.createElement('div'));
+        span.textContent = '...\n'
+    }
+
+    for (let i = Math.max(0, left - 3); i < left; ++ i) {
+        let span = pre.appendChild(document.createElement('div'));
+        span.textContent = allLiness[0][i] + '\n'
+    }
+
+    bgColors = ['#FFD0D0', '#D0FFD0'];
+    let ord1 = 0;
+    let ord2 = 0;
+    while (ord1 < liness[0].length || ord2 < liness[1].length) {
+        let span = pre.appendChild(document.createElement('div'));
+        if (ord1 < liness[0].length && h[0][ord1]) {
+            span.textContent = liness[0][ord1] + '\n';
+            span.style.backgroundColor = bgColors[0];
+            ++ ord1;
+        } else if (ord2 < liness[1].length && h[1][ord2]) {
+            span.textContent = liness[1][ord2] + '\n';
+            span.style.backgroundColor = bgColors[1];
+            ++ ord2;
+        } else {
+            span.textContent = liness[1][ord2] + '\n';
+            ++ ord1; ++ ord2;
+        }
+    }
+
+    for (let i = right - 1; i >= Math.max(right - 3, 0); -- i) {
+        let span = pre.appendChild(document.createElement('div'));
+        span.textContent = allLiness[0][l1 - i - 1] + '\n'
+    }
+
+    if (right > 3) {
+        let span = pre.appendChild(document.createElement('div'));
+        span.textContent = '...\n'
+    }
+}
+
+function createCodeEditorCell(el, step, readonly, aimagic, saveCallback, unlockCallback) {
+    let value = step.code;
+    let lang = step.lang;
+    let holder = el.appendChild(document.createElement('div'));
+    holder.style.position = 'relative';
+    holder.style.left = '0px';
+    holder.style.top = '0px';
+
+    let ret = {'code': value, 'dependants': []}
+
+    let editorspan = document.createElement('span')
+    editorspan.style.overflow = 'hidden'
+    editorspan.style.left = '0px';
+    editorspan.style.top = '0px';
+    let lockedspan = document.createElement('span')
+    lockedspan.style.display = 'none';
+    lockedspan.style.border = '1px solid black'
+    lockedspan.style.borderRadius = '5px'
+    lockedspan.style.padding = '10px'
+    lockedspan.style.left = '15px';
+    lockedspan.style.top = '15px';
+    lockedspan.style.backgroundColor = '#F0F0F0';
+    lockedspan.style.zIndex = 9;
+    let editor = null;
+    if (!readonly) {
+        let spans = [editorspan, lockedspan];
+        for (let i = 0; i < 2; ++ i) {
+            holder.appendChild(spans[i]);
+            spans[i].style.position = 'absolute';
+            spans[i].style.margin = '0px';
+            spans[i].style.boxSizing = 'border-box';
+        }
+
+        editor = CodeMirror(editorspan, {
+            value: value,
+            mode:  {"cpp": "text/x-c++src", "simplescript": "text/x-simplescript"}[lang],
+            lineNumbers: true,
+            theme: 'monokai',
+            indentWithTabs: false,
+            indentUnit: 4,
+            readOnly: !!aimagic,
+            height: 'auto',
+            gutters: ["CodeMirror-linenumbers", "errorsAndDebug"],
+            extraKeys: {
+                "Tab": function(cm){
+                    if (cm.somethingSelected()) {
+                        cm.execCommand("indentMore");
+                    } else {
+                        var spaces = Array(cm.getOption("indentUnit") + 1).join(" ");
+                        cm.replaceSelection(spaces);
+                    }
+                },
+                "Shift-Tab": "indentLess"
+            },
+        });
+
+        let onchange = function() {
+            ret['code'] = editor.getValue();
+            if (!aimagic) saveCallback(editor.getValue());
+            updatePreview(true);
+        };
+
+        editor.on("change", onchange)
+        editor.on("blue", onchange)
+
+        v3HTML(lockedspan, '<i>The code is locked, because it affects an execution or submission below. Unlocking the code will invalidate all such executions and submissions.</i>\n\n')
+        let btn = lockedspan.appendChild(document.createElement('button'))
+        btn.innerText = 'Unlock'
+        btn.onclick = function() {
+            for (let i = 0; i < ret.dependants.length; ++ i) {
+                ret.dependants[i].invalidate();
+            }
+            ret.unlock()
+            unlockCallback()
+        }
+    }
+    let preview = holder.appendChild(document.createElement('div'));
+
+    preview.style.boxSizing = 'border-box';
+
+    let tm = null;
+    let tmr = false;
+    function updatePreview(recurse) {
+        if (tm) {
+            if (tmr != recurse) {
+                updatePreviewInner(tmr)
+            }
+            clearInterval(tm);
+            tm = null;
+        }
+        tm = setTimeout(function() { updatePreviewInner(recurse) }, 300)
+        tmr = recurse;
+    }
+    function updatePreviewInner(recurse) {
+        preview.innerText = '';
+        let code = preview.appendChild(document.createElement('pre'))
+        code.classList.add(lang)
+        if (ret.prev_code_cell) {
+            codeDiff(code, ret.prev_code_cell.code, ret.code)
+        } else {
+            let lines = ret['code'].split('\n')
+            for (let i = 0; i < lines.length; ++ i) {
+                let line = code.appendChild(document.createElement('div'))
+                line.textContent = lines[i] + '\n';
+            }
+        }
+        hljs.highlightElement(code);
+        if (ret.next_code_cell && recurse) { ret.next_code_cell.updatePreview(false) }
+
+        if (!readonly) {
+            requestAnimationFrame(ret.reposition);
+        }
+    }
+    ret.updatePreview = updatePreview;
+
+    preview.onclick = function() {
+        let pane = createFixedPane(true);
+        let pre = pane.appendChild(document.createElement('pre'));
+        let lines = ret['code'].split('\n')
+        for (let i = 0; i < lines.length; ++ i) {
+            let line = pre.appendChild(document.createElement('div'))
+            line.textContent = lines[i] + '\n';
+        }
+        hljs.highlightElement(pre);
+    }
+
+    requestAnimationFrame(function() { updatePreviewInner(false) });
+
+    if (!readonly) {
+        preview.style.position = 'absolute';
+        preview.style.top = '0px';
+
+        function reposition() {
+            let w = holder.offsetWidth;
+            editorspan.style.width = Math.min(Math.floor(w / 2), 600) + 'px';
+            lockedspan.style.width = Math.min(Math.floor(w / 2), 600) + 'px';
+            preview.style.width = Math.ceil(w / 2) - 10 + 'px';
+            preview.style.left = Math.min(Math.floor(w / 2), 600) + 10 + 'px';
+            lockedspan.style.width = Math.min(Math.floor(w / 2), 600) - 30 + 'px'
+
+            let h = Math.max(300, preview.offsetHeight);
+            editorspan.style.height = h + 'px';
+            holder.style.height = h + 'px';
+            requestAnimationFrame(function() { editor.setSize(null, "100%"); });
+        }
+
+        requestAnimationFrame(reposition);
+
+        window.addEventListener('resize', reposition)
+        ret['reposition'] = reposition
+
+        let lockV = 0;
+        ret['lock'] = function() { editor.setOption("readOnly", true); lockedspan.style.display = ''; step.locked = true; ++ lockV; return lockV; }
+        ret['unlock'] = function(maybeLockV) { if (maybeLockV !== undefined && maybeLockV != lockV) { return } lockedspan.style.display = 'none'; editor.setOption("readOnly", !!aimagic); step.locked = false; }
+        if (step.locked) {
+            ret['lock']()
+        } else {
+            ret['unlock']()
+        }
+    }
+
+    return ret;
+}
+
+function createCodeExecutionCell(el, data, readonly, aimagic, saveInput, runInput, checkOutput, unlockCallback) {
+    let holder = el.appendChild(document.createElement('div'));
+    holder.style.position = 'relative';
+    holder.style.left = '0px';
+    holder.style.top = '0px';
+
+    let textarea = document.createElement('textarea');
+    textarea.style.left = '30px';
+    textarea.style.top = '0px';
+    textarea.readOnly = !!aimagic;
+    let lockedspan = document.createElement('span')
+    lockedspan.style.display = 'none';
+    lockedspan.style.position = 'absolute';
+    lockedspan.style.border = '1px solid black'
+    lockedspan.style.borderRadius = '5px'
+    lockedspan.style.padding = '10px'
+    lockedspan.style.left = '45px';
+    lockedspan.style.top = '15px';
+    lockedspan.style.boxSizing = 'border-box';
+    lockedspan.style.backgroundColor = '#F0F0F0';
+    if (!readonly) {
+        let els = [textarea, lockedspan];
+        for (let i = 0; i < 2; ++ i) {
+            holder.appendChild(els[i]);
+            els[i].style.position = 'absolute';
+            els[i].style.margin = '0px';
+            els[i].style.boxSizing = 'border-box';
+        }
+        textarea.style.fontFamily = 'monospace';
+    }
+    let preview = holder.appendChild(document.createElement('div'));
+
+    preview.style.boxSizing = 'border-box';
+    preview.style.padding = '5px';
+
+    let ret = {}
+
+    let tm = null;
+    function redraw_output(holder) {
+        if (!data['run_id']) {
+            v3HTML(holder, "")
+            return;
+        }
+        v3HTML(holder, "<b>Input:</b>\n")
+        let createMono = function(text) {
+            let el = holder.appendChild(document.createElement('div'))
+            el.style.border = '1px solid black'
+            el.style.borderRadius = '5px'
+            el.style.padding = '10px'
+            el.style.margin = '15px'
+            el.style.fontFamily = 'monospace'
+            el.style.whiteSpace = 'pre-wrap';
+            el.innerText = text;
+        }
+        createMono(data['input']);
+
+        appendHTML(holder, "\n<b>Output:</b>\n")
+        if (data['output'] !== null) {
+            createMono(data['output']);
+        } else {
+            appendHTML(holder, "\n<i>Pending</i>");
+            let queueLenSpan = holder.appendChild(document.createElement('i'))
+            if (tm) clearTimeout(tm);
+            let f = function() {
+                checkOutput(function(x) {
+                    if (x['updated']) {
+                        data['output'] = x['updated']['output']; redraw_output(holder)
+                    } else if (x['moondance_queue_len']) {
+                        queueLenSpan.innerText = ' (In queue: ' + x['moondance_queue_len'] + ')'
+                        setTimeout(f, 400);
+                    } else if (!x["stop"]) {
+                        setTimeout(f, 100);
+                    }
+                })
+            };
+            tm = setTimeout(f, 400);
+        }
+
+        if (ret['reposition']) {
+            requestAnimationFrame(ret['reposition'])
+        }
+    }
+
+    if (!readonly) {
+        preview.style.position = 'absolute';
+        preview.style.top = '0px';
+
+        let runBtn = preview.appendChild(document.createElement('button'));
+        let output_holder = preview.appendChild(document.createElement('div'));
+
+        redraw_output(output_holder);
+
+        runBtn.innerText = 'Run Test';
+
+        runBtn.onclick = function() {
+            if (!ret.prev_code_cell) {
+                alert("There's no code to run");
+                return;
+            } else {
+                ret.prev_code_cell.lock();
+            }
+
+            data['locked'] = true;
+            ret.lock();
+            v3HTML(output_holder, "\n<i>Running</i>\n");
+            runInput(textarea.value, function(x) { if (x['updated']) { data['run_id'] = x['updated']['run_id']; redraw_output(output_holder); } else { ret.invalidate(); }  })
+        }
+
+        function reposition() {
+            let w = holder.offsetWidth;
+            textarea.style.width = Math.min(Math.floor(w / 2), 600) - 30 + 'px';
+            preview.style.width = Math.ceil(w / 2) - 10 + 'px';
+            preview.style.left = Math.min(Math.floor(w / 2), 600) + 10 + 'px';
+            lockedspan.style.width = Math.min(Math.floor(w / 2), 600) - 60 + 'px'
+
+            let h = Math.max(200, preview.offsetHeight);
+
+            textarea.style.height = h + 'px';
+            holder.style.height = h + 'px';
+        }
+
+        textarea.onkeyup = function() {
+            if (!data['locked']) {
+                saveInput(textarea.value);
+            }
+            reposition();
+        }
+
+        window.addEventListener('resize', reposition)
+
+        textarea.value = data["input"];
+
+        requestAnimationFrame(reposition);
+
+        ret['reposition'] = reposition
+        ret['lock'] = function() {
+            runBtn.style.display = 'none';
+            textarea.readOnly = true;
+            lockedspan.style.display = '';
+        }
+        ret['invalidate'] = function() {
+            runBtn.style.display = '';
+            textarea.readOnly = !!aimagic
+            lockedspan.style.display = 'none';
+            data['locked'] = false;
+            data['run_id'] = null;
+            data['output'] = null;
+            redraw_output(output_holder);
+        }
+
+        v3HTML(lockedspan, '<i>Unlocking the input will invalidate the execution result.</i>\n\n')
+        let btn = lockedspan.appendChild(document.createElement('button'))
+        btn.innerText = 'Unlock'
+        btn.onclick = function() {
+            ret.invalidate()
+            unlockCallback()
+        }
+    } else {
+        redraw_output(preview)
+    }
+
+    return ret
+}
+
+function compileNS(code, callback) {
+    let ds = new DecompressionStream("gzip")
+    fetch("/compile_ns", {"method": "POST", "headers": { "Content-Type": "application/json" }, body: code}).then(x => x.body).then(x => x.pipeThrough(ds)).then(x => streamToArrayBuffer(x)).then(w => {
+        let ff = new TextDecoder().decode(w.slice(0, 5));
+        if (ff == 'error') {
+            let j = JSON.parse(new TextDecoder().decode(w.slice(5)))
+            if (j['error'] !== undefined) {
+                errorOut(j['error'])
+            } else {
+                callback({'error': j})
+            }
+        } else {
+            compile_simplescript(w).then(compiled => {
+                callback(compiled)
+            }).catch(errorOut)
+        }
+    }).catch(errorOut)
+}
+
+function createNSFuncs(images) {
+    let sprites = null;
+
+    function showGeneratedPuzzle(el, j) {
+        if (hasDeepOrNull(j, '$deep')) {
+            v3HTML(el, '<i>The object is too big or too deep, cannot render</i>')
+            return;
+        }
+        if (hasDeepOrNull(j, '$null')) {
+            v3HTML(el, '<i>The object has fields that are nulls, cannot render</i>')
+            return;
+        }
+        ensureSpritesLoaded(el, function(sprites) {
+            let myImages = []
+            for (let i = 0; i < images.length; ++ i) {
+                myImages.push(images[i])
+            }
+            for (let i = 0; i < j['images'].length; ++ i) {
+                let c = renderCanvas(j['images'][i]['image'], sprites)
+                myImages.push({'name': j['images'][i]['name'], 'img': c.toDataURL()})
+            }
+            v3HTML(el, '<b>Problem Statement:</b> ')
+            let toolbar = el.appendChild(document.createElement('span'));
+            clickify([toolbar])
+            appendHTML(el, '\n')
+
+            let puzzleAnswers = [];
+            let interactiveAnswers = [];
+            let puzzleContainer = el.appendChild(document.createElement('span'))
+
+            function redrawPuzzle() {
+                v3HTML(puzzleContainer, j['question'], myImages, {'isEditor': true, 'answers': interactiveAnswers, 'onclick': onclick})
+            }
+
+            for (let i = 0; i < j['reveals'].length; ++ i) {
+                let reveal = j['reveals'][i];
+                if (reveal['answer']) {
+                    puzzleAnswers[reveal['name']] = reveal['answer']
+                } else if (reveal['choices']) {
+                    puzzleAnswers[reveal['name']] = reveal['choices'][reveal['answer_ord']]
+                }
+            }
+
+            let onclick = function(span, id_) {
+                interactiveAnswers[id_] = puzzleAnswers[id_] || ''
+                redrawPuzzle();
+
+                toolbar.innerText = 'Hide all revealed answers'
+                toolbar.onclick = function() {
+                    interactiveAnswers = []
+                    redrawPuzzle()
+                    toolbar.innerText = ''
+                }
+            };
+
+            redrawPuzzle()
+            appendHTML(el, '\n\n<b>Step-by-Step Solution:</b>\n')
+            appendHTML(el, j['solution'], myImages)
+        })
+    }
+
+    function ensureSpritesLoaded(el, callback) {
+        if (sprites != null) {
+            callback(sprites)
+        } else if (images.length == 0) {
+            sprites = {}
+            callback(sprites)
+        } else {
+            v3HTML(el, '<i>Loading sprites...</i>');
+            let localSprites = {}
+            let loaded = 0;
+            for (let i = 0; i < images.length; ++ i) {
+                let image = new Image();
+                image.onload = function() {
+                    localSprites[images[i].name] = image
+                    loaded += 1
+                    if (loaded == images.length) {
+                        sprites = localSprites
+                        v3HTML(el, '');
+                        try {
+                            callback(sprites)
+                        } catch (e) {
+                            v3HTML(preview, '<i>' + e + '</i>')
+                        }
+                    }
+                }
+                image.src = images[i].img
+            }
+        }
+    }
+
+    return {
+        'showGeneratedPuzzle': showGeneratedPuzzle,
+        'ensureSpritesLoaded': ensureSpritesLoaded,
+    }
+}
+
+function renderNightSkyValue(el, output, showGeneratedPuzzle, ensureSpritesLoaded) {
+    let handlers = {
+        'nightsky::canvas::Canvas': function(el, j) {
+            if (hasDeepOrNull(j, '$deep')) {
+                v3HTML(el, '<i>The object is too big or too deep, cannot render</i>')
+            } else if (hasDeepOrNull(j, '$null')) {
+                v3HTML(el, '<i>The object has fields that are nulls, cannot render</i>')
+            } else {
+                ensureSpritesLoaded(el, sprites => {
+                    let c = renderCanvas(j, sprites);
+                    el.appendChild(c)
+                });
+            }
+        },
+        'nightsky::puzzle::Puzzle': showGeneratedPuzzle,
+    }
+    try {
+        renderValue(el, output, handlers);
+    } catch (e) {
+        v3HTML(el, '<i>' + e + '</i>')
+    }
+}
+
+function createNSExecutionCell(el, data, images, codeCell, readonly, aimagic, saveCallback, unlockCallback) {
+    let holder = el.appendChild(document.createElement('div'));
+    holder.style.position = 'relative';
+    holder.style.left = '0px';
+    holder.style.top = '0px';
+
+    if (!codeCell) {
+        v3HTML(holder, '<i>No code to execute</i>');
+        return;
+    }
+
+    let leftPane = document.createElement('span');
+    holder.appendChild(leftPane);
+    leftPane.style.marginLeft = '30px';
+    leftPane.style.boxSizing = 'border-box';
+    let preview = holder.appendChild(document.createElement('div'));
+
+    preview.style.boxSizing = 'border-box';
+    preview.style.marginLeft = '30px';
+
+    let ret = {}
+
+    let funcs = createNSFuncs(images);
+    let showGeneratedPuzzle = funcs['showGeneratedPuzzle'];
+    let ensureSpritesLoaded = funcs['ensureSpritesLoaded']
+
+    function updateLeftPane() {
+        v3HTML(leftPane, '');
+        v3HTML(preview, '');
+        if (data.funcs === undefined) {
+            let compileBtn = leftPane.appendChild(document.createElement('button'))
+            let errorSpan = leftPane.appendChild(document.createElement('span'))
+            compileBtn.innerText = 'Compile'
+            compileBtn.onclick = function() {
+                let lockV = codeCell.lock();
+                compileBtn.innerText = 'Compiling...'
+                compileBtn.disabled = true;
+                errorSpan.innerText = ''
+                compileNS(codeCell.code, function(j) {
+                    if (j['error'] !== undefined) {
+                        let e = j['error']
+                        compileBtn.innerText = 'Compile'
+                        compileBtn.disabled = false;
+                        errorSpan.innerText = '\n[' + e.prefix + e.row + ',' + e.col + '] ' + e.message
+                        codeCell.unlock(lockV)
+                    } else {
+                        let fs = j.metadata.functions;
+                        let funcs = []
+                        for (let fname in fs) {
+                            let f = fs[fname];
+                            let good = (fname.match(/::/g) || []).length == 1;
+                            let args = []
+                            for (let j = 0; j < f['arguments'].length; ++ j) {
+                                let t = f['arguments'][j]['type']['type']
+                                if (t != 'int' && t != 'float') {
+                                    good = false;
+                                    break;
+                                }
+                                args.push(f['arguments'][j])
+                            }
+                            if (good) {
+                                funcs.push({"name": fname, "args": args})
+                            }
+                        }
+                        data.funcs = funcs
+                        data.funcOrdinal = 0;
+                        delete data['output']
+                        delete data['argVals']
+                        codeCell.compiled = j
+                        saveCallback()
+                        updateLeftPane()
+                    }
+                })
+            }
+        } else {
+            if (data.funcs.length == 0) {
+                v3HTML(leftPane, '<i>No functions to show</i>')
+                delete data['argVals']
+                delete data['output']
+            } else {
+                v3HTML(leftPane, 'Function: ')
+                let select = leftPane.appendChild(document.createElement('select'))
+                let argsHolder = leftPane.appendChild(document.createElement('span'))
+                let inputs = [];
+                for (let i = 0; i < data.funcs.length; ++ i) {
+                    let option = select.appendChild(document.createElement('option'))
+                    option.innerText = data.funcs[i].name;
+                }
+                function selectFunction(ordinal) {
+                    data.funcOrdinal = ordinal;
+                    delete data['argVals'];
+                    delete data['output']
+                    saveCallback()
+                    updateLeftPane();
+                }
+
+                let f = data.funcs[data.funcOrdinal];
+                let t = f.args;
+
+                argsHolder.innerText = '';
+                inputs = [];
+                for (let i = 0; i < t.length; ++ i) {
+                    let label = argsHolder.appendChild(document.createElement('span'));
+                    label.innerText = t[i].name + ': '
+                    label.style.marginLeft = '5px';
+                    let txt = argsHolder.appendChild(document.createElement('input'))
+                    txt.readOnly = readonly
+                    inputs.push(txt);
+                    txt.style.width = '50px';
+
+                    if (data.argVals) {
+                        txt.value = data.argVals[i]
+                    }
+                }
+
+                if (!readonly) {
+                    let btn = argsHolder.appendChild(document.createElement('button'))
+                    btn.innerText = 'Run';
+                    btn.style.marginLeft = '5px';
+                    btn.onclick = function() {
+                        let after = function(compiled) {
+                            let invocationArgVals = [];
+                            data.argVals = [];
+                            for (let i = 0; i < f.args.length; ++ i) {
+                                let val;
+                                if (f.args[i].type.type == 'int') {
+                                    try {
+                                        val = BigInt(inputs[i].value);
+                                    } catch(e) { val = 0n; }
+                                    invocationArgVals.push(val);
+                                    data.argVals.push(val.toString());
+                                } else {
+                                    val = parseFloat(inputs[i].value) || 0.0;
+                                    invocationArgVals.push(f2i(val));
+                                    data.argVals.push(val.toString());
+                                }
+                            }
+                            let ret = invoke_simplescript(compiled, f.name, invocationArgVals)
+                            data.output = ret;
+                            saveCallback()
+                            updateLeftPane();
+                        }
+
+                        if (!codeCell.compiled) {
+                            v3HTML(preview, '\n<i>Compiling...</i>')
+                            compileNS(codeCell.code, function(compiled) {
+                                if (compiled['error'] !== undefined) {
+                                    let e = compiled['error']
+                                    v3HTML(preview, '\n<i>Re-compilation failed</i>')
+                                    alert('[' + e.prefix + e.row + ',' + e.col + '] ' + e.message)
+                                } else {
+                                    codeCell.compiled = compiled;
+                                    after(compiled)
+                                }
+                            });
+                        } else {
+                            after(codeCell.compiled);
+                        }
+                    }
+                }
+
+                select.selectedIndex = data.funcOrdinal || 0
+                select.onchange = function() { selectFunction(select.selectedIndex) }
+                select.disabled = readonly
+
+                if (data.output !== undefined && data.output !== null) {
+                    renderNightSkyValue(preview, data.output, showGeneratedPuzzle, ensureSpritesLoaded)
+                }
+            }
+        }
+    }
+
+    if (!readonly) {
+        ret['lock'] = function() {
+        }
+        ret['invalidate'] = function() {
+            delete data['funcs']
+            delete data['funcOrdinal']
+            delete data['argVals']
+            delete data['output']
+            updateLeftPane()
+        }
+    }
+
+    updateLeftPane()
+
+    return ret
+}
+
+function showStepByStepEditor(holder, steps, config, images, readonly, saveState) {
+    holder = holder.appendChild(document.createElement('div'))
+    holder.style.marginBottom = '500px';
+    let redrawVersion = 0;
+    function redraw() {
+        ++ redrawVersion;
+        let localRedrawVersion = redrawVersion;
+
+        let oldScrollY = window.scrollY;
+        // This is quite hacky, but most of the repositioning happens in the next animation frame, and some in the one that follows, so request the scroll three times
+        requestAnimationFrame(function() { window.scroll(null, oldScrollY); requestAnimationFrame(function() { window.scroll(null, oldScrollY); requestAnimationFrame(function() { window.scroll(null, oldScrollY); }) }) });
+        holder.innerText = '';
+        let last_code_cell = null;
+        let scrollTo = [];
+        for (let i = 0; i <= steps.length; ++ i) {
+            appendHTML(holder, "\n");
+            let anchor = holder.appendChild(document.createElement('sup'))
+            clickify([anchor])
+            anchor.innerText = '[' + (i + 1) + ']'
+            scrollTo.push(anchor);
+            anchor.onclick = function() {
+                let wher = prompt("Scroll to:", (i + 1))
+                if (wher) {
+                    scrollTo[parseInt(wher) - 1].scrollIntoView();
+                }
+            }
+            
+            if (!readonly) {
+                appendHTML(holder, " Add: ");
+                for (let j = 0; j < config["allowed"].length; ++ j) {
+                    if (config["allowed"][j]["kind"] == 'compprog_ai' && i != steps.length) {
+                        continue;
+                    }
+                    if (j) { appendHTML(holder, " :: ") }
+                    let a = holder.appendChild(document.createElement('span'));
+                    clickify([a])
+                    a.innerText = config["allowed"][j]["name"];
+                    a.onclick = function() {
+                        if (i != 0 && steps[i - 1]['kind'] == 'compprog_ai') {
+                            alert('Can\'t add a step after an incomplete AI magic. Either delete the AI magic cell, or wait until it completes the generation.')
+                            return;
+                        }
+                        saveUpdate({'sbs_add_step': {'ord': i, 'kind': config["allowed"][j]["kind"]}}, false, saveState)
+                        steps.push([])
+                        let cur_ord = steps.length - 1;
+                        while (cur_ord > i) {
+                            steps[cur_ord] = steps[cur_ord - 1];
+                            -- cur_ord;
+                        }
+                        steps[cur_ord] = JSON.parse(JSON.stringify(config["allowed"][j]["default"]))
+                        if (steps[cur_ord].kind == 'code') {
+                            for (let k = cur_ord - 1; k >= 0; -- k) {
+                                if (steps[k].kind == 'code') {
+                                    steps[cur_ord].code = steps[k].code
+                                    steps[cur_ord].locked = steps[k].locked
+                                    break;
+                                }
+                            }
+                        }
+                        if (steps[cur_ord].kind == 'nsexec') {
+                            for (let k = cur_ord - 1; k >= 0; -- k) {
+                                if (steps[k].kind == 'code') {
+                                    break;
+                                }
+                                if (steps[k].kind == 'nsexec' && steps[k].funcs !== undefined) {
+                                    steps[cur_ord].funcs = JSON.parse(JSON.stringify(steps[k].funcs))
+                                    steps[cur_ord].funcOrdinal = 0;
+                                    break;
+                                }
+                            }
+                        }
+                        redraw();
+                    }
+                }
+
+                if (i != 0 || i != steps.length) {
+                    let skip = holder.appendChild(document.createElement('span'))
+                    skip.style.paddingLeft = '20px'
+
+                    let delbtn = function(txt, ord) {
+                        let a = holder.appendChild(document.createElement('span'));
+                        clickify([a])
+                        a.innerText = txt;
+                        a.onclick = function() {
+                            if (steps[ord].locked) {
+                                alert('Cannot delete a locked step. Unlock it first.')
+                                return;
+                            }
+                            if (confirm('Are you sure you want to delete the cell ' + txt.toLowerCase() + "? This action cannot be undone")) {
+                                for (let ii = ord + 1; ii < steps.length; ++ ii) {
+                                    steps[ii - 1] = steps[ii];
+                                }
+                                steps.pop();
+                                redraw();
+                                saveUpdate({'sbs_del_step': ord}, false, saveState)
+                            }
+                        }
+                    }
+
+                    appendHTML(holder, "Delete: ");
+                    if (i != 0) { delbtn("Above", i - 1) }
+                    if (i != steps.length) {
+                        if (i != 0) { appendHTML(holder, ' :: ') }
+                        delbtn("Below", i);
+                    }
+                }
+                appendHTML(holder, '\n');
+            }
+
+            function renderStep(stepHolder, i, step, last_code_cell) {
+                let ret = {}
+                stepHolder.innerText = ''
+                let is_ai_magic = step.is_ai_magic;
+                if (is_ai_magic) {
+                    let el = stepHolder.appendChild(document.createElement('span'))
+                    el.innerText = 'This cell is generated by AI magic'
+                    el.style.backgroundImage = 'linear-gradient(to right, #FF8080, #FFC880, #FFFF80, #80FF80, #8080FF, #A080C0, #C080FF)'
+                    el.style.paddingLeft = el.style.paddingRight = '30px'
+
+                    if (step.ai_magic_options !== undefined && !readonly && i + 1 == steps.length) {
+                        let label = stepHolder.appendChild(document.createElement('span'))
+                        label.style.paddingLeft = '10px'
+                        label.innerText = 'Options: '
+                        for (let j = 0; j < step.ai_magic_options.length; ++ j) {
+                            if (j == step.ai_magic_chosen) {
+                                let b = stepHolder.appendChild(document.createElement('b'))
+                                b.innerText = '' + (j + 1)
+                                b.style.paddingLeft = '4px'
+                            } else {
+                                let a = stepHolder.appendChild(document.createElement('span'))
+                                clickify([a])
+                                a.innerText = '' + (j + 1)
+                                a.style.paddingLeft = '4px'
+                                a.onclick = function() {
+                                    let newStep = step.ai_magic_options[j];
+                                    newStep.ai_magic_options = step.ai_magic_options;
+                                    steps[i] = newStep
+                                    steps[i].ai_magic_chosen = j;
+                                    renderStep(stepHolder, i, newStep, last_code_cell)
+                                    saveUpdate({'sbs_change_ai_magic_option': {'ord': i, 'option': j}}, false, saveState)
+                                }
+                            }
+                        }
+                    }
+                }
+                appendHTML(stepHolder, '\n');
+
+                if (step.kind == 'text') {
+                    createEditorCell(stepHolder, step.text, images, {'readonly': readonly, 'aimagic': is_ai_magic, 'saveCallback': function(v) {
+                        let update = {}
+                        step.text = v;
+                        update['sbs_save_text_' + i] = v;
+                        saveUpdate(update, true, saveState)
+                    }})
+                } else if (step.kind == 'multiling') {
+                    createEditorCell(stepHolder, step.text, images, {'readonly': readonly, 'aimagic': is_ai_magic, 'path': ["steps", i, "text"], 'saveState': saveState})
+                } else if (step.kind == 'code') {
+                    let cell = createCodeEditorCell(stepHolder, step, readonly, is_ai_magic, function(v) {
+                        let update = {}
+                        step.code = v;
+                        update['sbs_save_code_' + i] = v;
+                        saveUpdate(update, true, saveState)
+                    }, function() {
+                        step.locked = false;
+                        saveUpdate({"sbs_unlock": i}, false, saveState)
+                    })
+                    if (last_code_cell) {
+                        last_code_cell.next_code_cell = cell;
+                        cell.prev_code_cell = last_code_cell;
+                    }
+                    ret['last_code_cell'] = cell;
+                } else if (step.kind == 'execution') {
+                    function saveInput(v) {
+                        let update = {}
+                        step.input = v;
+                        update['sbs_save_input_' + i] = v;
+                        if (!is_ai_magic) saveUpdate(update, true, saveState)
+                    }
+                    function runInput(v, callback) {
+                        let update = {}
+                        step.input = v;
+                        update['sbs_run_input_' + i] = v;
+                        saveUpdate(update, false, saveState, callback)
+                    }
+                    function checkOutput(callback) {
+                        if (redrawVersion != localRedrawVersion) return;
+                        let update = {}
+                        update['sbs_check_output_' + i] = true;
+                        saveUpdate(update, false, saveState, function(x) {
+                            if (redrawVersion != localRedrawVersion) return;
+                            callback(x)
+                        })
+                    }
+                    function unlock() {
+                        step.locked = false;
+                        saveUpdate({"sbs_unlock": i}, false, saveState)
+                    }
+                    let cell = createCodeExecutionCell(stepHolder, step, readonly, is_ai_magic, saveInput, runInput, checkOutput, unlock)
+
+                    if (last_code_cell) {
+                        last_code_cell.dependants.push(cell);
+                        cell.prev_code_cell = last_code_cell;
+                    }
+
+                    if (step.locked && !readonly) {
+                        cell.lock();
+                    }
+                } else if (step.kind == 'nsexec') {
+                    function save() {
+                        let update = {}
+                        payload = {'funcs': step.funcs, 'funcOrdinal': step.funcOrdinal}
+                        if (step['argVals'] !== undefined) {
+                            payload['argVals'] = step['argVals']
+                        }
+                        if (step['output'] !== undefined) {
+                            payload['output'] = step['output']
+                        }
+                        update['sbs_save_nsexec_' + i] = payload;
+                        saveUpdate(update, true, saveState)
+                    }
+                    function unlock() {
+                        step.locked = false;
+                        saveUpdate({"sbs_unlock": i}, false, saveState)
+                    }
+                    let cell = createNSExecutionCell(stepHolder, step, images, last_code_cell, readonly, is_ai_magic, save, unlock)
+
+                    if (last_code_cell) {
+                        last_code_cell.dependants.push(cell);
+                        cell.prev_code_cell = last_code_cell;
+                    }
+                } else if (step.kind == 'compprog_submit') {
+                    let here = stepHolder.appendChild(document.createElement('span'));
+                    let prev_code_cell = null;
+                    let redraw = function() {
+                        if (redrawVersion != localRedrawVersion) return;
+                        if (step.verdict) {
+                            v3HTML(here, "Submitted to the Online Judge.\nExecution result: <b>" + step.verdict + '</b>')
+                        } else if (step.submission_id !== undefined) {
+                            v3HTML(here, "Submitted to the Online Judge.\nExecution result: <i>Pending</i>\n")
+                            setTimeout(function() {
+                                if (redrawVersion != localRedrawVersion) return;
+                                let update = {}
+                                update['sbs_check_compprog_verdict_' + i] = true;
+                                saveUpdate(update, false, saveState, function(x) {
+                                    if (redrawVersion != localRedrawVersion) return;
+                                    if (x["updated"]) {
+                                        step["verdict"] = x["updated"]["verdict"]
+                                        redraw();
+                                    } else if (!x["stop"]) {
+                                        redraw();
+                                    }
+                                })
+                            }, 1000);
+                        } else {
+                            v3HTML(here, '');
+                            let button = here.appendChild(document.createElement('button'))
+                            button.innerText = 'Submit to Online Judge'
+                            button.onclick = function() {
+                                button.innerText = 'Submitting'
+                                button.disabled = true;
+
+                                let update = {}
+                                if (prev_code_cell) {
+                                    prev_code_cell.lock();
+                                }
+
+                                update['sbs_compprog_submit_' + i] = true;
+                                saveUpdate(update, false, saveState, function(x) {
+                                    if (x["updated"]) {
+                                        step["submission_id"] = x["updated"]["submission_id"]
+                                        redraw();
+                                    } else {
+                                        button.innerText = 'Submit to Online Judge'
+                                        button.disabled = false;
+                                    }
+                                })
+                            }
+                        }
+                        appendHTML(here, '\n')
+                    }
+                    redraw();
+
+                    if (last_code_cell) {
+                        let cell = {'invalidate': function() { delete step["verdict"]; delete step["submission_id"]; redraw(); }}
+                        last_code_cell.dependants.push(cell);
+                        prev_code_cell = last_code_cell;
+                    }
+                } else if (step.kind == 'compprog_ai') {
+                    let here = stepHolder.appendChild(document.createElement('span'));
+                    let redrawMe = function() {
+                        if (redrawVersion != localRedrawVersion) {
+                            return;
+                        }
+                        here.innerHTML = '';
+                        if (steps[i].error !== undefined) {
+                            here.appendChild(document.createElement('b')).innerText = 'Error: ';
+                            let errorSpan = here.appendChild(document.createElement('span'));
+                            errorSpan.style.color = 'darkred';
+                            errorSpan.innerText = steps[i].error + '\n\n';
+                        } else {
+                            if (steps[i].job_id !== undefined) {
+                                v3HTML(here, '\n<i>Generating...</i>\n\n')
+                            } else {
+                                v3HTML(here, '\n<i>Submitting for generation...</i>\n\n')
+                            }
+                            setTimeout(function() { if (redrawVersion != localRedrawVersion) return; saveUpdate({'sbs_check_compprog_ai_magic': i}, false, saveState, function(j) { if (redrawVersion != localRedrawVersion || !j['step']) return; let step = j['step']; steps[i] = step; if (step['kind'] == 'compprog_ai') { redrawMe() } else { redraw() } }) }, 2000)
+                        }
+                    }
+                    redrawMe()
+                } else if (step.kind == 'nsfinal') {
+                    let funcs = createNSFuncs(images);
+                    let showGeneratedPuzzle = funcs['showGeneratedPuzzle'];
+                    let ensureSpritesLoaded = funcs['ensureSpritesLoaded']
+
+                    let prev_code_cell = null;
+                    let redrawMe = function(step) {
+                        if (redrawVersion != localRedrawVersion) return;
+
+                        if (step.puzzles.length != 0) {
+                            v3HTML(stepHolder, '');
+                            let table = stepHolder.appendChild(document.createElement('table'))
+                            table.style.marginLeft = '20px'
+                            table.style.borderLeft = '2px solid gray'
+                            let tbody = table.appendChild(document.createElement('tbody'))
+                            for (let i = 0; i < step.puzzles.length; ++ i) {
+                                let tr1 = tbody.appendChild(document.createElement('tr'))
+                                let tr2 = tbody.appendChild(document.createElement('tr'))
+                                let td1 = tr1.appendChild(document.createElement('td'))
+                                let td2 = tr2.appendChild(document.createElement('td'))
+
+                                td1.style.backgroundColor = 'silver'
+                                td1.style.textAlign = 'center'
+                                v3HTML(td1, '<b>Final Puzzle ' + (i + 1) + '</b>');
+
+                                renderNightSkyValue(td2, step.puzzles[i], showGeneratedPuzzle, ensureSpritesLoaded)
+                            }
+                        } else if (step.error) {
+                            v3HTML(stepHolder, '')
+                            let span = stepHolder.appendChild(document.createElement('span'))
+                            span.style.color = 'darkred'
+                            v3HTML(span, '\n' + step.error + '\n')
+                        } else if (step.job_id != 0) {
+                            v3HTML(stepHolder, '\n<i>Waiting for puzzles...</i>\n')
+                            setTimeout(function() {
+                                if (redrawVersion != localRedrawVersion) return;
+                                let update = {}
+                                update['sbs_check_ns_final_' + i] = true;
+                                saveUpdate(update, false, saveState, function(x) {
+                                    if (redrawVersion != localRedrawVersion) return;
+                                    if (x["updated"]) {
+                                        steps[i] = x['updated']
+                                        step = x["updated"]
+                                        redrawMe(steps[i]);
+                                    } else if (!x["stop"]) {
+                                        redrawMe(step);
+                                    }
+                                })
+                            }, 2000)
+                        } else {
+                            v3HTML(stepHolder, '<i>Loading...</i>');
+                            v3do({'action': 'get_ns_attempts'}).then(x => {
+                                v3HTML(stepHolder, '\nYou generated the final set of puzzles <b>' + x['attempts'] + '</b> times.\n');
+                                if (x['attempts'] >= 2) {
+                                    appendHTML(stepHolder, 'Each consecutive generation will result in an overhead equal to 10% of the task price.\n');
+                                }
+                                appendHTML(stepHolder, '\n');
+                                let btn = stepHolder.appendChild(document.createElement('button'))
+                                btn.innerText = 'Generate'
+                                delayedButton(btn, '#F0F0F0', '#D0D0D0', function() {
+                                    btn.innerText = 'Generating...'
+                                    btn.disabled = true;
+                                    let update = {}
+                                    if (prev_code_cell) {
+                                        prev_code_cell.lock();
+                                    }
+
+                                    update['sbs_ns_get_final_' + i] = true;
+                                    saveUpdate(update, false, saveState, function(x) {
+                                        if (x["updated"] !== undefined) {
+                                            if (redrawVersion != localRedrawVersion) return
+                                            steps[i] = x['updated']
+                                            redrawMe(steps[i]);
+                                        }
+                                    })
+                                });
+                                appendHTML(stepHolder, '\n');
+                            })
+                        }
+                    }
+                    redrawMe(steps[i]);
+
+                    if (last_code_cell) {
+                        let cell = {'invalidate': function() { steps[i]['job_id'] = 0; steps[i]['puzzles'] = []; delete steps[i]['error']; redrawMe(steps[i]); }}
+                        last_code_cell.dependants.push(cell);
+                        prev_code_cell = last_code_cell;
+                    }
+                } else {
+                    appendHTML(stepHolder, "\n<i>Unknown kind</i>\n\n");
+                }
+                return ret
+            }
+
+            if (i < steps.length) {
+                let ret = renderStep(holder.appendChild(document.createElement('span')), i, steps[i], last_code_cell)
+                if (ret['last_code_cell'] !== undefined) {
+                    last_code_cell = ret['last_code_cell']
+                }
+            } else {
+                appendHTML(holder, '\n');
+            }
+        }
+    }
+    redraw()
+}
+
+function showPinksnailMoondanceCommon(holder, task_id, task, readonly, saveState) {
+    let tdata = task['data'];
+
+    appendHTML(holder, "\n\n<b>Problem Statement:</b>")
+    if (task_id == 402) {
+        createEditorCell(holder, tdata['statement'], task['images'], {'readonly': readonly, 'saveCallback': function(v) { saveUpdate({'lps_set_statement': v}, true, saveState) }});
+    } else {
+        createEditorCell(holder, tdata['statement'], task['images'], {'readonly': readonly, 'path': ["statement"], 'saveState': saveState});
+    }
+
+    appendHTML(holder, "\n\n<b>Sample Tests:</b>")
+
+    let tests_holder = holder.appendChild(document.createElement('span'))
+
+    function redraw_tests() {
+        tests_holder.innerHTML = '';
+        if (tdata.tests.length > 0) {
+            let table = tests_holder.appendChild(document.createElement("table"));
+            let tbody = table.appendChild(document.createElement("tbody"));
+            let tr = tbody.appendChild(document.createElement("tr"));
+            let td0 = tr.appendChild(document.createElement("td"));
+            let td1 = tr.appendChild(document.createElement("td"));
+            let td2 = tr.appendChild(document.createElement("td"));
+            td1.align = 'center'
+            td2.align = 'center'
+            v3HTML(td1, "<b>Input</b>")
+            v3HTML(td2, "<b>Output</b>")
+            for (let i = 0; i < tdata.tests.length; ++ i) {
+                let tr = tbody.appendChild(document.createElement("tr"));
+                let td0 = tr.appendChild(document.createElement("td"));
+                let td1 = tr.appendChild(document.createElement("td"));
+                let td2 = tr.appendChild(document.createElement("td"));
+                let td3 = !readonly ? tr.appendChild(document.createElement("td")) : null;
+
+                td0.vAlign = 'middle';
+                v3HTML(td0, "<b>" + (i + 1) + ": </b>");
+
+                let txt1 = td1.appendChild(document.createElement('textarea'));
+                txt1.rows = 10;
+                txt1.cols = 50;
+                txt1.value = tdata['tests'][i]['input']
+                txt1.onchange = function() {
+                    let update = {};
+                    tdata['tests'][i]['input'] = txt1.value;
+                    update["lps_set_input_" + i] = txt1.value;
+                    saveUpdate(update, true, saveState);
+                }
+
+                let txt2 = td2.appendChild(document.createElement('textarea'));
+                txt2.rows = 10;
+                txt2.cols = 50;
+                txt2.value = tdata['tests'][i]['output']
+                txt2.onchange = function() {
+                    tdata['tests'][i]['output'] = txt2.value;
+                    let update = {};
+                    update["lps_set_output_" + i] = txt2.value;
+                    saveUpdate(update, true, saveState);
+                }
+
+                if (!readonly) {
+                    td3.style.padding = '4px'
+                    td3.vAlign = 'top'
+
+                    let delbtn = td3.appendChild(document.createElement('span'));
+                    delbtn.innerText = 'Delete'
+                    clickify([delbtn]);
+
+                    delbtn.onclick = function() {
+                        saveUpdate({"lps_del_test": i}, false, saveState);
+                        for (let j = i + 1; j < tdata.tests.length; ++ j) {
+                            tdata.tests[j - 1] = tdata.tests[j];
+                        }
+                        tdata.tests.pop()
+                        redraw_tests()
+                    }
+                } else {
+                    txt1.readOnly = true;
+                    txt2.readOnly = true;
+                }
+            }
+        } else {
+            v3HTML(tests_holder, "\n<i>No sample tests</i>\n")
+        }
+
+        if (!readonly) {
+            let btn = tests_holder.appendChild(document.createElement("button"));
+            btn.innerText = 'Add Sample Test'
+
+            btn.onclick = function() {
+                tdata.tests.push({"input": "", "output": ""});
+                saveUpdate({"lps_add_test": ""}, false, saveState);
+                redraw_tests();
+            }
+        }
+    }
+    redraw_tests();
+}
+
+async function showPinkSnailTask(holder, task_id, task, readonly, saveState) {
+    let tdata = task['data'];
+
+    if (tdata['name'].trim()) {
+        appendHTML(holder, 'Please transcribe problem <b>' + tdata['name'].trim() + '</b> from this file:\n');
+    } else {
+        appendHTML(holder, 'Please transcribe the problem from the file below. If the file contains multiple problems, transcribe the first one, and set the corresponding checkbox below.\n');
+    }
+    let dla = holder.appendChild(document.createElement('span'));
+    clickify([dla]);
+    dla.innerText = 'Download File'
+    dla.onclick = function() { dlstmt(tdata['fname']) }
+
+    if (tdata['task_invalid_reason']) {
+        appendHTML(holder, '\n\nAuthor claims that this task is invalid. Their reason follows.\n\n' + tdata['task_invalid_reason'])
+        return;
+    }
+
+    if (!tdata['name'].trim()) {
+        appendHTML(holder, "\n\n")
+        let chk = holder.appendChild(document.createElement('input'));
+        chk.type = 'checkbox'
+        chk.checked = task['bugged']
+        chk.onchange = function() { saveUpdate({'lps_set_bugged': chk.checked}, true, saveState) }
+        if (readonly) {
+            chk.disabled = true;
+        }
+        appendHTML(holder, ' File contains multiple statements.');
+    }
+
+    showPinksnailMoondanceCommon(holder, task_id, task, readonly, saveState)
+}
+
+async function showMoondanceTask(holder, task_id, task, readonly, saveState) {
+    let tdata = task['data'];
+
+    appendHTML(holder, "Please transcribe and solve problem <b>" + tdata['problem_id'] + '</b> from <b>' + tdata['site'] + '</b>. Problem statement is here: ');
+    let dla = holder.appendChild(document.createElement('a'));
+    dla.target = "_blank"
+    dla.href = tdata['statement_url']
+    dla.innerText = tdata['statement_url']
+
+    if (tdata['task_invalid_reason']) {
+        appendHTML(holder, '\n\nAuthor claims that this task is invalid. Their reason follows.\n\n' + tdata['task_invalid_reason'])
+        return;
+    }
+
+    showPinksnailMoondanceCommon(holder, task_id, task, readonly, saveState)
+
+    appendHTML(holder, "\n\n\n<b>Step-by-step Solution")
+    showStepByStepEditor(holder, tdata['steps'], task['step_by_step_config'], task['images'], readonly, saveState)
+}
+
+async function showNightSkyTask(holder, task_id, task, readonly, saveState) {
+    let tdata = task['data'];
+
+    appendHTML(holder, tdata['nc_work_spec']);
+    appendHTML(holder, "\n\n");
+
+    if (tdata['task_invalid_reason']) {
+        appendHTML(holder, '\n\nAuthor claims that this task is invalid. Their reason follows.\n\n' + tdata['task_invalid_reason'])
+        return;
+    }
+
+    let rest = holder.appendChild(document.createElement('span'));
+
+    let redrawTheRest = function() {
+        buttons = ['Manual', 'Script', 'Split'];
+        handlers = [{'sq_set_is_nightsky': false}, {'sq_set_is_nightsky': true}, {'sq_set_is_leaf': false}];
+
+        function showButtons(ord) {
+            for (let i = 0; i < buttons.length; ++ i) {
+                if (i) appendHTML(rest, " | ")
+                if (i == ord) {
+                    appendHTML(rest, "<b>" + buttons[i] + "</b>");
+                } else {
+                    let a = rest.appendChild(document.createElement("span"));
+                    a.innerText = buttons[i];
+                    if (!readonly) {
+                        clickify([a]);
+                        a.onclick = function() {
+                            if (onlyKey(handlers[i]) == 'sq_set_is_leaf') {
+                                tdata.is_leaf = handlers[i]['sq_set_is_leaf']
+                            } else {
+                                tdata.is_leaf = true;
+                                tdata.is_nightsky = handlers[i]['sq_set_is_nightsky']
+                            }
+                            saveUpdate(handlers[i], true, saveState)
+                            redrawTheRest();
+                        }
+                    }
+                }
+            }
+        }
+
+        rest.innerHTML = '';
+        if (tdata.is_leaf && !tdata.is_nightsky) {
+            showButtons(0)
+            for (let i = 0; i < tdata.manual.length; ++ i) {
+                let puzzle = tdata.manual[i];
+                appendHTML(rest, "\n\n<b>Puzzle " + (i + 1) + "</b>")
+                let toolbar = rest.appendChild(document.createElement('span'));
+                toolbar.style.marginLeft = '10px'
+                appendHTML(rest, "\n")
+                let puzzleEditor = createPuzzleEditor(rest, puzzle, task['images'], {'readonly': readonly, 'path': ["manual", i], 'saveState': saveState})
+                puzzleEditor.showToolbar(toolbar)
+            }
+        }
+        else if (tdata.is_leaf && tdata.is_nightsky) {
+            showButtons(1)
+
+            appendHTML(rest, "\n\n\n<b>Write the code for the puzzle generator, explaining your work step-by-step:</b>")
+            showStepByStepEditor(rest, tdata['steps'], task['step_by_step_config'], task['images'], readonly, saveState)
+        } else {
+            showButtons(2)
+            showChildrenEditor(rest, task, readonly, saveState, redrawTheRest)
+        }
+    }
+
+    redrawTheRest()
+}
+
+async function showXelaAgentTask(holder, task_id, task, readonly, saveState) {
+    let tdata = task['data'];
+    let work_spec = tdata['nc_work_spec']
+
+    console.log(work_spec)
+
+    if (tdata['task_invalid_reason']) {
+        appendHTML(holder, '\n\nAuthor claims that this task is invalid. Their reason follows.\n\n' + tdata['task_invalid_reason'])
+        appendHTML(holder, '\n\n');
+    }
+
+    if (work_spec['old_summary']) {
+        holder.appendChild(document.createElement("h2")).innerText = 'Summary Before:\n'
+        appendHTML(holder, work_spec['old_summary'] || '')
+    } else {
+        holder.appendChild(document.createElement("h2")).innerText = 'Initial Task:\n'
+        appendHTML(holder, work_spec['initial_task'] || '')
+    }
+
+    holder.appendChild(document.createElement("h2")).innerText = 'Summary After (AI generated):\n'
+    appendHTML(holder, work_spec['new_summary'] || '')
+
+    if (!tdata['task_invalid_reason']) {
+        let controls_holder = holder.appendChild(document.createElement('span'));
+
+        let summary_holder = holder.appendChild(document.createElement('span'));
+        let hand_leg_holder = holder.appendChild(document.createElement('span'));
+        let broken_env_holder = holder.appendChild(document.createElement('span'));
+
+        summary_holder.appendChild(document.createElement("h2")).innerText = 'Summary After (by user):\n'
+        let summary_editor = createEditorCell(summary_holder, tdata['summary'], [], {'readonly': readonly, 'saveCallback': function(v) {
+            let update = {}
+            work_spec['summary'] = v;
+            update['agnt_set_summary'] = v;
+            saveUpdate(update, true, saveState)
+        }})
+
+        let reminders = ['Review the docs in the Docs section above.', 'The new summary, along with the list of files and the contents of HIGHLEVEL.md should be sufficient for one to continue working on the project.', 'To reiterate, no information relevant long- or short-term should be lost in the new summary.', 'If the model got stuck, the summary should contain the solution to the problem that the model is facing.', 'If the model has derailed and is doing something wrong, the summary should contain some instructions to itself that would correct the course of action.', 'Everything in the summary must be written in the first person.', 'All the information in the new summary can be derived from the old summary, the files that were read or written by the agent, and the shell commands executed.'];
+        appendHTML(summary_holder, '<b>Reminders</b>\n');
+        for (let i = 0; i < reminders.length; ++ i) {
+            let chk = summary_holder.appendChild(document.createElement('input'))
+            let localI = i;
+            chk.type = 'checkbox'
+            chk.checked = (i == 0 || tdata['check_' + i])
+            chk.onchange = function() {
+                let update = {}
+                update['agnt_set_check_' + i] = chk.checked;
+                saveUpdate(update, true, saveState)
+            } 
+            appendHTML(summary_holder, ' ' + reminders[i] + '\n');
+            if (i == 0 || readonly) { chk.disabled = true; }
+        }
+
+        hand_leg_holder.appendChild(document.createElement("h2")).innerText = 'Explanation for Roll Back (in first person):\n'
+        let hand_leg_editor = createEditorCell(hand_leg_holder, tdata['hand_leg_reason'] || '', [], {'readonly': readonly, 'saveCallback': function(v) {
+            let update = {}
+            work_spec['summary'] = v;
+            update['agnt_set_hand_leg_reason'] = v;
+            saveUpdate(update, true, saveState)
+        }})
+
+        broken_env_holder.appendChild(document.createElement("h2")).innerText = 'Why is environment broken? (free form):\n'
+        let broken_env_editor = createEditorCell(broken_env_holder, tdata['broken_env_reason'] || '', [], {'readonly': readonly, 'saveCallback': function(v) {
+            let update = {}
+            work_spec['summary'] = v;
+            update['agnt_set_broken_env_reason'] = v;
+            saveUpdate(update, true, saveState)
+        }})
+
+        function redraw() {
+            let is_hand_leg = tdata['agnt_is_intentional_hand_leg'] || false;
+            let is_broken_env = tdata['agnt_is_broken_env'] || false;
+            controls_holder.innerText = '\n\n\nNext steps: ';
+            summary_holder.style.display = (is_hand_leg || is_broken_env) ? 'none' : '';
+            hand_leg_holder.style.display = is_hand_leg ? '' : 'none';
+            broken_env_holder.style.display = is_broken_env ? '' : 'none';
+
+            if (!readonly) {
+                requestAnimationFrame(function() {
+                    if (!is_hand_leg && !is_broken_env) summary_editor.reposition();
+                    if (is_hand_leg) hand_leg_editor.reposition();
+                    if (is_broken_env) broken_env_editor.reposition();
+                })
+            }
+
+            let btns = [['New Summary', false, false], ['Roll Back', true, false], ['Report Broken Environment', false, true]]
+
+            for (let i = 0; i < 3; ++ i) {
+                let localI = i;
+                if (i) {
+                    controls_holder.appendChild(document.createElement('span')).innerText = ' :: '
+                }
+                if (btns[i][1] == is_hand_leg && btns[i][2] == is_broken_env) {
+                    controls_holder.appendChild(document.createElement('b')).innerText = btns[i][0]
+                } else {
+                    let a = controls_holder.appendChild(document.createElement('span'));
+                    a.innerText = btns[i][0]
+                    clickify([a])
+                    a.onclick = function() {
+                        if (!readonly) {
+                            tdata['agnt_is_intentional_hand_leg'] = btns[localI][1];
+                            tdata['agnt_is_broken_env'] = btns[localI][2];
+                            let update = {}
+                            if (btns[localI][1]) {
+                                update['agnt_set_intentional_hand_leg'] = true;
+                            } else if (btns[localI][2]) {
+                                update['agnt_set_broken_env'] = true;
+                            } else {
+                                update['agnt_set_intentional_hand_leg'] = false;
+                            }
+                            saveUpdate(update, true, saveState)
+                            redraw()
+                        }
+                    }
+                }
+            }
+        }
+        
+        redraw()
+    }
+
+    holder.appendChild(document.createElement("h2")).innerText = 'Shell Commands:\n'
+    if (work_spec.terminal_commands.length == 0) {
+        appendHTML(holder, '<i>No shell commands run</i>\n\n')
+    } else {
+        for (let i = 0; i < work_spec.terminal_commands.length; ++ i) {
+            if (i) {
+                holder.appendChild(document.createElement('br'))
+            }
+            let cm = work_spec.terminal_commands[i]
+            let h = holder.appendChild(document.createElement('div'))
+            h.style.border = '1px solid silver'
+            h.style.borderRadius = '3px'
+            h.style.padding = '5px'
+            //let table = holder.appendChild(document.createElement("table"))
+            //let tbody = table.appendChild(document.createElement("table"))
+            function add(title, data) {
+                //let tr = tbody.appendChild(document.createElement("tbody"))
+                //let td1 = tr.appendChild(document.createElement("td"))
+                //let td2 = tr.appendChild(document.createElement("td"))
+
+                //td1.vAlign = 'top'
+                //td2.vAlign = 'top'
+
+                h.appendChild(document.createElement('b')).innerText = title;
+                h.appendChild(document.createElement('pre')).innerText = data;
+            }
+
+            add('Command', cm.command)
+            add('Return Code', cm.returncode || 0)
+            add('StdOut', cm.stdout || '')
+            add('StdErr', cm.stderr || '')
+            if (cm.msg) {
+                add('Extra', cm.msg)
+            }
+        }
+    }
+
+    holder.appendChild(document.createElement("h2")).innerText = 'Files:\n'
+    let table = holder.appendChild(document.createElement("table"))
+    let tbody = table.appendChild(document.createElement("table"))
+
+    let cur_files = JSON.parse(JSON.stringify(work_spec['files_before']))
+
+    let touched_files = {}
+    if (work_spec['touched_files']) {
+        for (let i = 0; i < work_spec['touched_files'].length; ++ i) {
+            touched_files[work_spec['touched_files'][i]] = true;
+        }
+    }
+
+    for (let fname in work_spec['files_after']) {
+        let tr = tbody.appendChild(document.createElement("tbody"))
+        let td2 = tr.appendChild(document.createElement("td"))
+
+        td2.vAlign = 'top'
+
+        let span = td2.appendChild(document.createElement('span'))
+        span.appendChild(document.createElement('b')).innerText = fname;
+
+        if (touched_files[fname] || fname.startsWith('/') && touched_files[fname.substring(1)]) {
+            let bluery = span.appendChild(document.createElement('small'));
+            bluery.style.color = 'blue';
+            bluery.innerText = 'visible';
+            bluery.style.paddingLeft = '10px'
+        }
+
+        let upper = span.appendChild(document.createElement('span'));
+        upper.style.paddingLeft = '10px'
+        if (!work_spec['files_before'][fname]) {
+            let greenery = upper.appendChild(document.createElement('small'));
+            greenery.style.color = 'green';
+            greenery.innerText = 'New file\n';
+        }
+
+        let code1 = span.appendChild(document.createElement('pre'))
+        code1.classList.add('python')
+        let lines = work_spec['files_after'][fname].split('\n')
+        for (let i = 0; i < lines.length; ++ i) {
+            let line = code1.appendChild(document.createElement('div'))
+            line.textContent = lines[i] + '\n';
+        }
+        hljs.highlightElement(code1);
+
+        if (cur_files[fname]) {
+            let code2 = span.appendChild(document.createElement('pre'))
+            codeDiff(code2, work_spec['files_before'][fname], work_spec['files_after'][fname])
+
+            let is_diff = true;
+            function redraw() {
+                upper.innerHTML = 'Show: '
+                code1.style.display = is_diff ? 'none' : ''
+                code2.style.display = is_diff ? '' : 'none'
+                let a;
+                if (is_diff) {
+                    upper.appendChild(document.createElement('b')).innerText = 'Diff'
+                    upper.appendChild(document.createElement('span')).innerText = ' :: '
+                    a = upper.appendChild(document.createElement('span'))
+                    a.innerText = 'Full'
+                } else {
+                    a = upper.appendChild(document.createElement('span'))
+                    a.innerText = 'Diff'
+                    upper.appendChild(document.createElement('span')).innerText = ' :: '
+                    upper.appendChild(document.createElement('b')).innerText = 'Full'
+                }
+                clickify([a])
+                a.onclick = function() {
+                    is_diff = !is_diff
+                    redraw()
+                }
+            }
+
+            redraw()
+        }
+    }
+}
+
+async function showStarquakeTask(holder, task_id, task, readonly, saveState) {
+    let tdata = task['data'];
+
+    appendHTML(holder, tdata['nc_work_spec']);
+    appendHTML(holder, "\n\n");
+
+    if (tdata['task_invalid_reason']) {
+        appendHTML(holder, '\n\nAuthor claims that this task is invalid. Their reason follows.\n\n' + tdata['task_invalid_reason'])
+        return;
+    }
+
+    appendHTML(holder, "The scope contains: ");
+
+    let rest = holder.appendChild(document.createElement('span'));
+
+    let redrawTheRest = function() {
+        let buttons = ['One Problem', 'Multiple Problems'];
+        let handlers = [{'sq_set_is_leaf': true}, {'sq_set_is_leaf': false}];
+
+        if (tdata.is_chapter !== undefined) {
+            buttons = ['One Transcription', 'One Problem', 'Need to Split'];
+            handlers = [{'sq_set_is_chapter': true}, {'sq_set_is_chapter': false}, {'sq_set_is_leaf': false}];
+        }
+
+        function showButtons(ord) {
+            for (let i = 0; i < buttons.length; ++ i) {
+                if (i) appendHTML(rest, " | ")
+                if (i == ord) {
+                    appendHTML(rest, "<b>" + buttons[i] + "</b>");
+                } else {
+                    let a = rest.appendChild(document.createElement("span"));
+                    a.innerText = buttons[i];
+                    if (!readonly) {
+                        clickify([a]);
+                        a.onclick = function() {
+                            if (onlyKey(handlers[i]) == 'sq_set_is_leaf') {
+                                tdata.is_leaf = handlers[i]['sq_set_is_leaf']
+                            } else {
+                                tdata.is_leaf = true;
+                                tdata.is_chapter = handlers[i]['sq_set_is_chapter']
+                            }
+                            saveUpdate(handlers[i], true, saveState)
+                            redrawTheRest();
+                        }
+                    }
+                }
+            }
+        }
+
+        rest.innerHTML = '';
+        if (tdata.is_leaf && tdata.is_chapter) {
+            showButtons(0)
+
+            appendHTML(rest, "\n\n<b>Transcription</b>")
+            createEditorCell(rest, tdata['chapter'], task['images'], {'readonly': readonly, 'saveCallback': function(v) { tdata['chapter'] = v; saveUpdate({'sq_set_chapter': v}, true, saveState) }});
+        } else if (tdata.is_leaf && !tdata.is_chapter) {
+            showButtons(buttons.length - 2)
+
+            appendHTML(rest, "\n\n<b>Problem Statement</b>")
+            createEditorCell(rest, tdata['problem'], task['images'], {'readonly': readonly, 'saveCallback': function(v) { tdata['problem'] = v; saveUpdate({'sq_set_problem': v}, true, saveState) }});
+            appendHTML(rest, "\n\n<b>Step-by-Step Solution</b>")
+            createEditorCell(rest, tdata['solution'], task['images'], {'readonly': readonly, 'saveCallback': function(v) { tdata['solution'] = v; saveUpdate({'sq_set_solution': v}, true, saveState) }});
+            if (!tdata['answer_kind']) {
+                appendHTML(rest, "\n\n<b>Precise Answer</b>")
+                createEditorCell(rest, tdata['answer'], task['images'], {'readonly': readonly, 'saveCallback': function(v) { tdata['answer'] = v; saveUpdate({'sq_set_answer': v}, true, saveState) }});
+            } else {
+                appendHTML(rest, "\n\n<b>Answer: </b>")
+                let select = rest.appendChild(document.createElement('select'));
+
+                if (readonly) {
+                    select.style.display = 'none';
+                    appendHTML(rest, tdata['answer_kind']);
+                }
+
+                let answer_holder = rest.appendChild(document.createElement('span'));
+                let options = ["Imprecise", "Precise", "Solution Only"]
+                let cell = null;
+
+                for (let i = 0; i < options.length; ++ i) {
+                    let option = select.appendChild(document.createElement("option"));
+                    option.innerText = options[i];
+                    if (options[i] == tdata['answer_kind']) {
+                        option.selected = true;
+                    }
+                }
+
+                function updateSelected() {
+                    let o = options[select.selectedIndex];
+                    if (o == 'Solution Only') {
+                        answer_holder.style.display = 'none';
+                    } else {
+                        answer_holder.style.display = '';
+                        if (cell) cell.reposition();
+                    }
+                }
+
+                updateSelected();
+
+                select.onchange = function() {
+                    saveUpdate({'sq_set_answer_kind': options[select.selectedIndex]}, false, saveState)
+                    updateSelected();
+                }
+
+                appendHTML(answer_holder, "\n")
+                cell = createEditorCell(answer_holder, tdata['answer'], task['images'], {'readonly': readonly, 'saveCallback': function(v) { tdata['answer'] = v; saveUpdate({'sq_set_answer': v}, true, saveState) }});
+            }
+        } else {
+            showButtons(buttons.length - 1)
+
+            showChildrenEditor(rest, task, readonly, saveState, redrawTheRest)
+        }
+    }
+
+    redrawTheRest()
+}
+
+async function showChildrenEditor(holder, task, readonly, saveState, redrawCallback) {
+    let tdata = task['data'];
+    holder.appendChild(document.createElement("br"));
+    holder.appendChild(document.createElement("br"));
+    let table = holder.appendChild(document.createElement("table"));
+    let tbody = table.appendChild(document.createElement("tbody"));
+    for (let i = 0; i < tdata.children.length; ++ i) {
+        let tr = tbody.appendChild(document.createElement("tr"));
+        if (i % 2 == 0) {
+            tr.style.backgroundColor = '#F0F0F0'
+        } else {
+            tr.style.backgroundColor = '#E0E0E0'
+        }
+        let td1 = tr.appendChild(document.createElement("td"));
+        let td2 = !readonly ? tr.appendChild(document.createElement("td")) : null;
+        let td2e = !readonly ? tr.appendChild(document.createElement("td")) : null;
+        let td2d = !readonly ? tr.appendChild(document.createElement("td")) : null;
+        let td3 = tr.appendChild(document.createElement("td"));
+        td1.style.padding = '4px'
+        td3.style.padding = '4px'
+        td1.vAlign = 'top'
+        td3.vAlign = 'top'
+        v3HTML(td1, "<b>" + (i + 1) + "</b>");
+        v3HTML(td3, tdata.children[i]);
+
+        if (!readonly) {
+            td2.style.padding = '4px'
+            td2.vAlign = 'top'
+            td2e.style.padding = '4px'
+            td2e.vAlign = 'top'
+            td2d.style.padding = '4px'
+            td2d.vAlign = 'top'
+
+            let delbtn = td2.appendChild(document.createElement('span'));
+            delbtn.innerText = 'Delete'
+            let editbtn = td2e.appendChild(document.createElement('span'));
+            editbtn.innerText = 'Edit'
+            let downbtn = td2d.appendChild(document.createElement('span'));
+            downbtn.innerText = '▼'
+            let upbtn = td2d.appendChild(document.createElement('span'));
+            upbtn.innerText = '▲'
+            clickify([upbtn, downbtn, delbtn, editbtn]);
+
+            delbtn.onclick = function() {
+                saveUpdate({"sq_del_child": i}, false, saveState);
+                for (let j = i + 1; j < tdata.children.length; ++ j) {
+                    tdata.children[j - 1] = tdata.children[j];
+                }
+                tdata.children.pop()
+                redrawCallback()
+            }
+
+            editbtn.onclick = function() {
+                let pane = createFixedPane(false);
+                appendHTML(pane, '\n\n')
+                let txt = pane.appendChild(document.createElement('textarea'));
+                txt.rows = 10;
+                txt.style.width = '90%';
+                txt.value = tdata.children[i];
+                appendHTML(pane, '\n\n')
+
+                let changeBtn = pane.appendChild(document.createElement('button'));
+                changeBtn.innerText = 'Update';
+                let cancelBtn = pane.appendChild(document.createElement('button'));
+                cancelBtn.style.marginLeft = '10px'
+                cancelBtn.innerText = 'Cancel';
+
+                changeBtn.onclick = function() {
+                    saveUpdate({"sq_set_child": {'ord': i, 'value': txt.value}}, false, saveState);
+                    tdata.children[i] = txt.value;
+                    pane.style.display = 'none';
+                    redrawCallback()
+                }
+
+                cancelBtn.onclick = function() {
+                    pane.style.display = 'none';
+                }
+            }
+
+            downbtn.onclick = function() {
+                if (i + 1 < tdata.children.length) {
+                    saveUpdate({"sq_set_child": {'ord': i, 'value': tdata.children[i + 1]}}, false, saveState);
+                    saveUpdate({"sq_set_child": {'ord': i + 1, 'value': tdata.children[i]}}, false, saveState);
+                    let t = tdata.children[i + 1]; tdata.children[i + 1] = tdata.children[i]; tdata.children[i] = t;
+                    redrawCallback()
+                }
+            }
+
+            upbtn.onclick = function() {
+                if (i > 0) {
+                    saveUpdate({"sq_set_child": {'ord': i, 'value': tdata.children[i - 1]}}, false, saveState);
+                    saveUpdate({"sq_set_child": {'ord': i - 1, 'value': tdata.children[i]}}, false, saveState);
+                    let t = tdata.children[i - 1]; tdata.children[i - 1] = tdata.children[i]; tdata.children[i] = t;
+                    redrawCallback()
+                }
+            }
+        }
+    }
+
+    if (!readonly) {
+        appendHTML(holder, "\nAdd a subtask:\n");
+        let txt = holder.appendChild(document.createElement("textarea"));
+        appendHTML(holder, "\n");
+        let btn = holder.appendChild(document.createElement("button"));
+
+        txt.rows = 10;
+        txt.style.width = '90%';
+        txt.placeholder = 'Subtask description'
+        btn.innerText = "Add"
+
+        btn.onclick = function() {
+            if (txt.value.trim()) {
+                tdata.children.push(txt.value);
+                saveUpdate({"sq_push_child": txt.value}, false, saveState);
+                redrawCallback();
+            }
+        }
+    }
+}
+
+async function createImagesUploader(holder, task, saveState) {
+    function compressImage(img, widthHeightRet, maxWidth, maxHeight, wantPNG) {
+        maxWidth = maxWidth || 400;
+        maxHeight = maxHeight || 400;
+        let desiredWidth = Math.min(maxWidth, img.width);
+        let desiredHeight = Math.min(maxHeight, img.height);
+        let scaling = Math.min(desiredWidth / img.width, desiredHeight / img.height);
+        let canvas = document.createElement('canvas');
+        let width = Math.floor(img.width * scaling);
+        let height = Math.floor(img.height * scaling);
+        canvas.width = width;
+        canvas.height = height;
+        let ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        if (!!widthHeightRet) {
+            widthHeightRet.width = width;
+            widthHeightRet.height = height;
+        }
+
+        return wantPNG ? canvas.toDataURL() : canvas.toDataURL("image/jpeg",0.7);
+    }
+
+    let tableHolder = holder.appendChild(document.createElement('span'));
+
+    function redraw() {
+        tableHolder.innerText = '';
+
+        let table = tableHolder.appendChild(document.createElement("table"));
+        let tbody = table.appendChild(document.createElement("tbody"));
+        for (let i = 0; i < task.images.length; ++ i) {
+            let idata = task.images[i];
+
+            let tr = tbody.appendChild(document.createElement("tr"));
+            if (i % 2 == 0) {
+                tr.style.backgroundColor = '#F0F0F0'
+            } else {
+                tr.style.backgroundColor = '#E0E0E0'
+            }
+            let td1 = tr.appendChild(document.createElement("td"));
+            let td2 = tr.appendChild(document.createElement("td"));
+            let td3 = tr.appendChild(document.createElement("td"));
+            td1.style.padding = '4px'
+            td2.style.padding = '4px'
+            td3.style.padding = '4px'
+            td1.vAlign = 'top'
+            td2.vAlign = 'top'
+            td3.vAlign = 'top'
+            td1.innerText = idata.name;
+            td3.appendChild(document.createElement('img')).src = idata.img
+
+            let delbtn = td2.appendChild(document.createElement('span'));
+            delbtn.innerText = 'Delete'
+            clickify([delbtn]);
+
+            delbtn.onclick = function() {
+                saveUpdate({"del_image": idata['name']}, false, saveState);
+                for (let j = i + 1; j < task.images.length; ++ j) {
+                    task.images[j - 1] = task.images[j];
+                }
+                task.images.pop()
+                redraw()
+            }
+        }
+    }
+
+    let imgData = null;
+
+    appendHTML(holder, "\n\n");
+
+    let imgHere = holder.appendChild(document.createElement('img'));
+    imgHere.style.display = 'none';
+
+    appendHTML(holder, "\n");
+
+    let btn1 = holder.appendChild(document.createElement('button'));
+    btn1.innerText = 'Choose Image'
+
+    appendHTML(holder, '\n\nImage name: ')
+    let txtName = holder.appendChild(document.createElement('input'));
+
+    let btn2 = holder.appendChild(document.createElement('button'));
+    btn2.innerText = 'Upload'
+
+    let maxWidth = 800;
+    let maxHeight = 800;
+    let wantPNG = true;
+
+    btn1.onclick = function() {
+        let a = document.createElement('input');
+        a.type = 'file';
+        a.accept = "image/png,image/jpeg,image/avif";
+        a.onchange = function() {
+            if (this.files && this.files[0]) {
+                var FR= new FileReader();
+
+                FR.addEventListener("load", function(e) {
+                    let img = new Image();
+                    img.src = e.target.result;
+                    img.onload = function() {
+                        imgData = compressImage(img, null, maxWidth, maxHeight, wantPNG);
+                        imgHere.src = imgData;
+                        imgHere.style.display = '';
+                    }
+                }); 
+
+                FR.readAsDataURL( this.files[0] );
+            }
+        }
+        a.click();
+    }
+
+    pasteEventListenerHolder[0] = (event) => {
+        // Check if there's an image in the clipboard items
+        let items = (event.clipboardData || event.originalEvent.clipboardData).items;
+        for (let index in items) {
+            let item = items[index];
+            if (item.kind === 'file' && item.type.indexOf('image') !== -1) {
+                // Found an image in the clipboard
+                let blob = item.getAsFile();
+                let reader = new FileReader();
+
+                // Read the image as a base64 string
+                reader.onload = (e) => {
+                    let img = new Image();
+                    img.src = e.target.result;
+                    img.onload = function() {
+                        imgData = compressImage(img, null, maxWidth, maxHeight, wantPNG);
+                        imgHere.src = imgData;
+                        imgHere.style.display = '';
+                    }
+                };
+                reader.readAsDataURL(blob);
+            }
+        }
+    };
+
+    btn2.onclick = function() {
+        if (!txtName.value.trim()) {
+            alert("Provide the image name");
+            return;
+        }
+        if (!/^[a-zA-Z0-9_]+$/.test(txtName.value)) {
+            alert("Only english letters, digits and underscores in the image name");
+            return;
+        }
+        if (!imgData) {
+            alert("Choose the image to upload")
+            return;
+        }
+        for (let i = 0; i < task.images.length; ++ i) {
+            if (task.images[i].name == txtName.value) {
+                alert("There's already an image with this name")
+                return;
+            }
+        }
+        let tuple = {"name": txtName.value, "img": imgData}
+        saveUpdate({"add_image": tuple}, false, saveState);
+        task.images.push(tuple);
+        redraw();
+    }
+
+    redraw();
+}
+
+let pasteEventListenerHolder = [null]
+document.addEventListener('paste', (event) => {
+    if (pasteEventListenerHolder[0]) {
+        pasteEventListenerHolder[0](event)
+    }
+});
+
+async function createImagesUploaderToggle(holder, task, saveState) {
+    let imagesTab = false
+    let tabsHolder = holder.appendChild(document.createElement('span'));
+    tabsHolder.style.paddingLeft = '10px'
+
+    let workHolder = holder.appendChild(document.createElement('span'));
+    let imgHolder = holder.appendChild(document.createElement('span'));
+    v3HTML(imgHolder, '\n\nHere you can upload images for your submission. You can then use them in any text field by typing &lt;img <i>image_name</i>&gt;.')
+
+    createImagesUploader(imgHolder, task, saveState);
+
+    function redraw() {
+        tabsHolder.innerText = '';
+        if (!imagesTab) {
+            appendHTML(tabsHolder, '<b>Work</b> | ');
+            let a = tabsHolder.appendChild(document.createElement('span'))
+            a.innerText = 'Images'
+            clickify([a])
+            a.onclick = function() {
+                imagesTab = true;
+                redraw()
+            }
+            workHolder.style.display = '';
+            imgHolder.style.display = 'none';
+        } else {
+            let a = tabsHolder.appendChild(document.createElement('span'))
+            a.innerText = 'Work'
+            clickify([a])
+            a.onclick = function() {
+                imagesTab = false;
+                redraw()
+            }
+            appendHTML(tabsHolder, ' | <b>Images</b>');
+            workHolder.style.display = 'none';
+            imgHolder.style.display = '';
+        }
+    }
+
+    redraw()
+
+    return workHolder
+}
+
+async function showTask(holder, task_id, task, readonly, saveState) {
+    let workHolder;
+    console.log(task['utid'])
+    if (task['needs_images'] && !readonly) {
+        workHolder = await createImagesUploaderToggle(holder, task, saveState)
+    } else {
+        workHolder = holder;
+    }
+
+    if (task['clar_short']) {
+        holder.appendChild(document.createElement('h2')).innerText = task['clar_short'] + '\n'
+        holder.appendChild(document.createElement('b')).innerText = 'Comment from taskset maintainers: ';
+        holder.appendChild(document.createElement('span')).innerText = task['clar_long'] + '\n\n';
+    }
+
+    if (task['report']) {
+        let rhh = holder.appendChild(document.createElement('div'));
+        rhh.style.marginTop = '5px'
+        rhh.style.border = '1px solid black'
+        rhh.style.borderRadius = '5px'
+        rhh.style.padding = '5px'
+        let whom_readable = reportTargetNames[task['report']['whom']];
+        let verdicts = ['Penalty to Reporter', 'Overhead to Reporter', 'Overhead to ' + whom_readable, 'Penalty to ' + whom_readable, '2 Penalties to ' + whom_readable, '3 Penalties to ' + whom_readable, 'Permanent ban to ' + whom_readable]
+        let colors = ['darkgreen', 'darkgreen', 'darkred', 'darkred', 'darkred', 'darkred', 'darkred']
+        let reviews = task['report']['reviews']
+        v3HTML(rhh, "Reported: <b>" + whom_readable + "</b>\nComment: " + task['report']['comment'] + '\nFinal Verdict: ');
+        let fvspan = rhh.appendChild(document.createElement('b'));
+        fvspan.innerText = verdicts[task['report']['final_outcome']]
+        fvspan.style.color = colors[task['report']['final_outcome']]
+        appendHTML(rhh, '\n\n<b>Reviews:</b>\n')
+        for (let i = 0; i < reviews.length; ++ i) {
+            let span = rhh.appendChild(document.createElement('b'))
+            span.innerText = verdicts[reviews[i].verdict] + ": "
+            span.style.color = colors[reviews[i].verdict]
+            appendHTML(rhh, reviews[i].comment + '\n');
+        }
+    }
+
+    if (task['is_honeypot']) {
+        let rh = workHolder.appendChild(document.createElement('small'))
+        rh.style.color = '#FF8C00';
+        appendHTML(rh, "\n<b>This task is a HONEYPOT</b> 🍯");
+    }
+
+    if (task['submission_comment']) {
+        let rh = workHolder.appendChild(document.createElement('small'))
+        rh.style.color = 'darkgreen';
+        appendHTML(rh, '\n<b>Comment from the author:</b> ' + task['submission_comment'])
+    }
+
+    if (task['reviews'].length > 0) {
+        let rh = workHolder.appendChild(document.createElement('small'))
+        rh.style.color = 'darkred';
+        appendHTML(rh, '\nThis work has been reviewed. Click ')
+        let a = rh.appendChild(document.createElement('span'))
+        a.innerText = 'here';
+        clickify([a])
+        appendHTML(rh, ' to see the reviews')
+
+        let rhh = workHolder.appendChild(document.createElement('div'));
+        let closeA = rhh.appendChild(document.createElement('span'))
+        closeA.innerText = 'Close'
+        clickify([closeA])
+        rhh.style.border = '1px solid black'
+        rhh.style.borderRadius = '5px'
+        rhh.style.padding = '5px'
+        rhh.style.display = 'none'
+        let last_verdict = 0;
+        for (let i = 0; i < task['reviews'].length; ++ i) {
+            if (task['reviews'][i]['verdict'] >= 200) {
+                if (last_verdict < 200) {
+                    let msgHolder = rhh.appendChild(document.createElement('span'));
+                    msgHolder.innerHTML = "<br>The following reviews are for a <b>previous</b> challenge of this task";
+                    msgHolder.style.color = 'blue';
+                }
+            } else if (task['reviews'][i]['verdict'] >= 100) {
+                if (last_verdict < 100 || last_verdict >= 200) {
+                    let msgHolder = rhh.appendChild(document.createElement('span'));
+                    msgHolder.innerHTML = "<br>The following reviews are for the <b>current</b> challenge of this task";
+                    msgHolder.style.color = 'blue';
+                }
+            }
+            last_verdict = task['reviews'][i]['verdict'];
+
+            rhh.appendChild(document.createElement('span')).innerText = '\n' + (i + 1) + '. ';
+            if (task['reported_review_id'] != task['reviews'][i]['review_id']) {
+                let reportSpan = rhh.appendChild(document.createElement('sup'));
+                clickify([reportSpan]);
+                reportSpan.classList.add('hidden-unless-ctrl-alt');
+                reportSpan.innerText = '[report]';
+                let review_id = task['reviews'][i]['review_id']
+                reportSpan.onclick = function() {
+                    let comment = prompt('Reason for reporting:')
+                    if (comment) {
+                        reportSpan.innerHTML = '<i>reporting...</i>'
+                        reportSpan.classList.remove('btnlink')
+                        reportSpan.classList.remove('hidden-unless-ctrl-alt')
+                        v3do({'action': 'report', 'utid': task['utid'], 'comment': comment, 'whom': 'specific', 'review_id': review_id}).then(x => { reportSpan.innerHTML = '<b>reported</b>' })
+                    }
+                }
+            } else {
+                appendHTML(rhh, '<b>THIS REPORT: </b>');
+            }
+            let ordinalHolder = rhh.appendChild(document.createElement('span'));
+            if (task['reviews'][i]['old'] && task['reviews'][i]['verdict'] == 0) {
+                ordinalHolder.innerHTML = "<b>Rejected previous version.</b> ";
+                ordinalHolder.style.color = '#FF8080';
+            } else if (task['reviews'][i]['old'] && task['reviews'][i]['verdict'] == 1) {
+                ordinalHolder.innerHTML = "<b>Accepted previous version.</b> ";
+                ordinalHolder.style.color = '#20F020';
+            } else if (task['reviews'][i]['verdict'] == 0) {
+                ordinalHolder.innerHTML = "<b>Rejected this version.</b> ";
+                ordinalHolder.style.color = 'darkred';
+            } else if (task['reviews'][i]['verdict'] == 1) {
+                ordinalHolder.innerHTML = "<b>Accepted this version.</b> ";
+                ordinalHolder.style.color = 'darkgreen';
+            } else {
+                // Text should be relative to the challenger point of view
+                if (task['reviews'][i]['verdict'] % 100 == (task['is_honeypot'] || 0)) {
+                    ordinalHolder.innerHTML = "<b>Disagreed with the challenger</b> ";
+                } else {
+                    ordinalHolder.innerHTML = "<b>Agreed with the challenger</b> ";
+                }
+                // Colors are absolute, to match the colors of the reviews above
+                if (task['reviews'][i]['verdict'] % 100 == 1) {
+                    ordinalHolder.style.color = 'darkgreen';
+                } else {
+                    ordinalHolder.style.color = 'darkred';
+                }
+            }
+            if (task['reviews'][i]['comment']) {
+                appendHTML(rhh, task['reviews'][i]['comment']);
+            } else {
+                appendHTML(rhh, "✓");
+            }
+        }
+
+        a.onclick = function() { rhh.style.display = '' }
+        closeA.onclick = function() { rhh.style.display = 'none' }
+    }
+
+    if (task['challenge_comment']) {
+        let rh = workHolder.appendChild(document.createElement('small'))
+        rh.style.color = 'DodgerBlue';
+        appendHTML(rh, '\nThe review is challenged. Click ')
+        let a = rh.appendChild(document.createElement('span'))
+        a.innerText = 'here';
+        clickify([a])
+        appendHTML(rh, ' to see the challenge reason')
+
+        let rhh = workHolder.appendChild(document.createElement('div'));
+        let closeA = rhh.appendChild(document.createElement('span'))
+        closeA.innerText = 'Close'
+        clickify([closeA])
+        rhh.style.border = '1px solid black'
+        rhh.style.borderRadius = '5px'
+        rhh.style.padding = '5px'
+        rhh.style.display = 'none'
+
+        if (task['is_honeypot']) {
+            appendHTML(rhh, '\n<b>This task is a honeypot. Someone has accepted it. The honeypot author believes it must have been rejected, see their comments below.</b>\n');
+        }
+
+        appendHTML(rhh, '\n' + task['challenge_comment']);
+
+        a.onclick = function() { rhh.style.display = '' }
+        closeA.onclick = function() { rhh.style.display = 'none' }
+    }
+
+    if (readonly) {
+        appendHTML(workHolder, "\n");
+        let reportHolder = workHolder.appendChild(document.createElement('small'))
+        let report_a = reportHolder.appendChild(document.createElement('span'))
+        let reportReasonHolder = workHolder.appendChild(document.createElement('div'));
+        reportReasonHolder.style.display = 'none'
+        clickify([report_a])
+        report_a.innerText = 'Report...'
+        report_a.onclick = function() {
+            reportHolder.innerText = 'Report '
+            let report_author = reportHolder.appendChild(document.createElement('span'))
+            clickify([report_author])
+            report_author.innerText = reportTargetNames['author']
+            report_author.onclick = createReportHandler(reportReasonHolder, task['utid'], 'author', task['is_multiling'])
+
+            if (task['utid'] && task['challenge_comment']) {
+                appendHTML(reportHolder, " :: ")
+                let report_challengers = reportHolder.appendChild(document.createElement('span'))
+                clickify([report_challengers])
+                report_challengers.innerText = reportTargetNames['challengers']
+                report_challengers.onclick = createReportHandler(reportReasonHolder, task['utid'], 'challengers', task['is_multiling'])
+            }
+            appendHTML(reportHolder, ' :: To report a particular review, hold Ctrl+Alt and click [Report] next to the review')
+        }
+    }
+
+    if (task['from_task']) {
+        appendHTML(workHolder, "\n");
+        let from_task_a = workHolder.appendChild(document.createElement('small'))
+        clickify([from_task_a])
+        from_task_a.innerText = 'See the work that introduced this task'
+        from_task_a.onclick = function() {
+            previewTask(task['from_task'])
+        }
+    }
+
+    appendHTML(workHolder, "\n\n");
+
+    if (task_id == 401 || (task_id >= 450 && task_id < 460) || (task_id >= 300 && task_id < 350)) {
+        showStarquakeTask(workHolder, task_id, task, readonly, saveState);
+    } else if (task_id == 402 || task_id == 403) {
+        showMoondanceTask(workHolder, task_id, task, readonly, saveState);
+    } else if (task_id == 405) {
+        showPinkSnailTask(workHolder, task_id, task, readonly, saveState);
+    } else if (task_id == 420) {
+        showNightSkyTask(workHolder, task_id, task, readonly, saveState);
+    } else if (task_id == 460) {
+        showXelaAgentTask(workHolder, task_id, task, readonly, saveState);
+    } else {
+        errorOut("Unknown task " + task_id);
+    }
+}

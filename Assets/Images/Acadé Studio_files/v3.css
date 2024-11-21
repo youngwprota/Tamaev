@@ -1,0 +1,17 @@
+body, textarea { font-family: Arial, Helvetica, sans-serif; }
+button { border: 1px solid black; border-radius: 5px; padding: 5px 15px 5px 15px; }
+.btnlink:hover {
+    color: #80A0C0;
+    text-decoration: underline;
+    cursor: pointer;
+}
+.btnlink {
+    color: #6080A0;
+    cursor: pointer;
+}
+.hidden-unless-ctrl-alt {
+    display: none
+}
+body.ctrl-alt-pressed .hidden-unless-ctrl-alt {
+    display: inline
+}

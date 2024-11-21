@@ -1,0 +1,328 @@
+function streamToArrayBuffer(stream) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let totalBytes = 0;
+
+        let reader = stream.getReader();
+
+        function readOne() {
+            reader.read().then(({ done, value }) => {
+                if (done) {
+                    const arrayBuffer = new ArrayBuffer(totalBytes);
+                    const uint8Array = new Uint8Array(arrayBuffer);
+                    let offset = 0;
+                    for (const chunk of chunks) {
+                        uint8Array.set(new Uint8Array(chunk), offset);
+                        offset += chunk.byteLength;
+                    }
+                    resolve(arrayBuffer);
+                    return;
+                }
+                chunks.push(value);
+                totalBytes += value.byteLength;
+                return readOne();
+            })
+        }
+        readOne()
+    });
+}
+
+function i2f(x) {
+    const BYTES = 8;
+    const buffer = new ArrayBuffer(BYTES);
+    const float64Arr = new Float64Array(buffer);
+    const int64Arr = new BigInt64Array(buffer);
+    int64Arr[0] = x;
+    return float64Arr[0]
+}
+
+function f2i(x) {
+    const BYTES = 8;
+    const buffer = new ArrayBuffer(BYTES);
+    const float64Arr = new Float64Array(buffer);
+    const int64Arr = new BigInt64Array(buffer);
+    float64Arr[0] = x;
+    return int64Arr[0]
+}
+
+async function compile_simplescript(arrayBuffer) {
+    let native_funcs = {'native_funcs': {
+        'std::math::Math::sin': x => { return [f2i(Math.sin(i2f(x))), 0n] },
+        'std::math::Math::cos': x => { return [f2i(Math.cos(i2f(x))), 0n] },
+        'std::math::Math::tan': x => { return [f2i(Math.tan(i2f(x))), 0n] },
+        'std::math::Math::exp': x => { return [f2i(Math.exp(i2f(x))), 0n] },
+        'std::math::Math::log': x => { return [f2i(Math.log(i2f(x))), 0n] },
+        'std::math::Math::sqrt': x => { return [f2i(Math.sqrt(i2f(x))), 0n] },
+        'std::math::Math::acos': x => { return [f2i(Math.acos(i2f(x))), 0n] },
+        'std::math::Math::asin': x => { return [f2i(Math.asin(i2f(x))), 0n] },
+        'std::math::Math::atan': x => { return [f2i(Math.atan(i2f(x))), 0n] },
+        'std::math::Math::atan2': (y, x) => { return [f2i(Math.atan2(i2f(y), i2f(x))), 0n] },
+        'std::math::Math::random': () => { return [f2i(Math.random()), 0n] },
+    }};
+
+    const dataView = new DataView(arrayBuffer.slice(0, 4));
+    const len = dataView.getInt32(0, true);
+
+
+    let w = arrayBuffer.slice(4, len + 4)
+    const decoder = new TextDecoder('utf-8');
+    const metadata = JSON.parse(decoder.decode(arrayBuffer.slice(len + 4)));
+
+    return await WebAssembly.instantiate(w, native_funcs).then(result => {
+        return {'instance': result.instance, 'metadata': metadata}
+    }).catch(error => {
+        throw 'Error instantiating WebAssembly module:' + error;
+    });
+}
+
+function invoke_simplescript(compiled, fname, args) {
+    function to_json(value, type, metadata, memory, depth, visited) {
+        if (depth === undefined) { depth = 0 }
+        if (visited === undefined) { visited = [0] }
+        visited[0] += 1;
+        function readint(offset) {
+            const dataView = new DataView(memory.slice(Number(offset), Number(offset) + 8));
+            return dataView.getBigInt64(0, true);
+        }
+        function parse_object(cls, offset) {
+            let ret = {'$class_name': cls.name}
+            for (let i = 0; i < cls.fields.length; ++ i) {
+                let field = cls.fields[i];
+                if (visited[0] >= 8192) {
+                    ret[field.name] = {"$deep": true};
+                } else {
+                    ret[field.name] = to_json(readint(offset), field.type, metadata, memory, depth + 1, visited)
+                }
+                offset += 8n
+            }
+            return ret
+        }
+        if (type.type == 'int') {
+            return value.toString()
+        } else if (type.type == 'float') {
+            return i2f(value)
+        } else if (type.type == 'bool') {
+            return (value == 1n)
+        } else if (type.type == 'void' || type.type == 'dummy' || type.type == 'null') {
+            return null;
+        } else if (value == 0) {
+            return {'$null': true}
+        } else if (visited[0] >= 8192 || depth > 10) {
+            return {"$deep": true}
+        } else if (type.type == 'string') {
+            let ba_offset = readint(value)
+            let arr_offset = Number(readint(ba_offset))
+            let len = Number(readint(ba_offset + 8n))
+            const decoder = new TextDecoder('utf-8');
+            return decoder.decode(memory.slice(arr_offset, arr_offset + len));
+        } else if (type.type == 'list') {
+            let subtype = type.subtype;
+            let arr_offset = readint(value);
+            let len = readint(value + 8n);
+            let ret = [];
+            for (let i = 0n; i < len; i += 1n) {
+                if (visited[0] >= 8192) {
+                    ret.push({"$deep": true});
+                    break
+                }
+                ret.push(to_json(readint(arr_offset), subtype, metadata, memory, depth + 1, visited));
+                arr_offset += 8n
+            }
+            return ret;
+        } else if (type.type == 'map') {
+            let key_type = type.key_type;
+            let value_type = type.value_type;
+            let root_offset = readint(value);
+            let ret = [];
+            function readNode(offset) {
+                if (offset == 0) {
+                    return;
+                } else if (visited[0] >= 8192) {
+                    if (ret.length == 0 || typeof ret[ret.length - 1]["key"] != "object" || ret[ret.length - 1]["key"]["$deep"] == undefined) {
+                        ret.push({"key": {"$deep": true}, "value": {"$deep": true}});
+                    }
+                    return;
+                }
+                let left_offset = readint(offset)
+                let right_offset = readint(offset + 8n)
+                readNode(left_offset)
+                let key = readint(offset + 48n)
+                let value = readint(offset + 56n)
+                ret.push({"key": to_json(key, key_type, metadata, memory, depth + 1, visited), "value": to_json(value, value_type, metadata, memory, depth + 1, visited)});
+
+                readNode(right_offset)
+            }
+            readNode(root_offset)
+            return {'$map': ret}
+        } else if (type.type == 'dynobject') {
+            if ((value & ((1n << 32n) - 1n)) == 0n) {
+                return {'$null': true}
+            }
+            let cls = metadata.classes[metadata.first_method_ord_to_class_ids[value >> 32n]]
+            let offset = (value & ((1n << 32n) - 1n));
+            return parse_object(cls, offset)
+        } else if (type.type == 'object') {
+            let offset = value;
+            let cls = metadata.classes[type.class_id]
+            return parse_object(cls, offset)
+        }
+        throw "Unknown type " + type.type
+    }
+
+    let instance = compiled['instance'];
+    let metadata = compiled['metadata']
+
+    let reset_gas = instance.exports["reset_gas"];
+    reset_gas(100000000n);
+    let func = instance.exports[fname]
+    let return_type = metadata.functions[fname].return_type
+    let ret = func(...args);
+    let memory = instance.exports["memory"].buffer;
+    if (ret[1] != 0) {
+        let exception_class_id = 0;
+        for (let i in metadata.classes) {
+            if (metadata.classes[i].name == 'std::exception::Exception') {
+                exception_class_id = i;
+            }
+        }
+        return to_json(ret[1], {'type': 'dynobject', 'class_id': exception_class_id}, metadata, memory)
+    }
+    let j = to_json(ret[0], return_type, metadata, memory)
+    console.log(j)
+    return j
+}
+
+function parseColor(j) {
+    let r = Number(j.red);
+    let g = Number(j.green);
+    let b = Number(j.blue);
+    let a = Number(j.alpha);
+    if (r < 0 || r > 255 || b < 0 || b > 255 || g < 0 || g > 255 || a < 0 || a > 1 || isNaN(a)) {
+        throw "Invalid Color rgba(" + r + ", " + g + ", " + b + ", " + a + ")"
+    }
+
+    return "rgba(" + r + "," + g + "," + b + "," + a + ")"
+}
+
+// Sprites is a mapping from name to an Image
+function renderCanvas(j, sprites) {
+    let c = document.createElement('canvas');
+    let ctx = c.getContext("2d");
+    c.width = Number(j.width);
+    c.height = Number(j.height);
+    ctx.fillStyle = parseColor(j.background);
+    ctx.fillRect(0, 0, Number(j.width), Number(j.height))
+
+    function beginPath(shape) {
+        let ret = false;
+        ctx.strokeStyle = parseColor(shape.color)
+        ctx.lineWidth = Number(shape.thickness);
+        if (shape.fill['$class_name'] == 'nightsky::canvas::FillColor') {
+            ctx.fillStyle = parseColor(shape.fill.color);
+            ret = true;
+        }
+
+        ctx.beginPath();
+        return ret;
+    }
+
+    for (let shape of j.shapes) {
+        if (shape['$class_name'] == "nightsky::canvas::ShapeRect") {
+            let fill = beginPath(shape);
+            ctx.rect(Number(shape.left), Number(shape.top), Number(shape.width), Number(shape.height));
+            if (fill) ctx.fill();
+            ctx.stroke();
+        } else if (shape['$class_name'] == "nightsky::canvas::ShapeEllipse") {
+            let fill = beginPath(shape);
+            ctx.ellipse(Number(shape.left) + Number(shape.width) / 2, Number(shape.top) + Number(shape.height) / 2, Number(shape.width) / 2, Number(shape.height) / 2, 0, 0, Math.PI * 2);
+            if (fill) ctx.fill();
+            ctx.stroke();
+        } else if (shape['$class_name'] == "nightsky::canvas::ShapeLine") {
+            ctx.strokeStyle = parseColor(shape.color)
+            ctx.lineWidth = Number(shape.thickness);
+            ctx.beginPath();
+            ctx.moveTo(Number(shape.x1), Number(shape.y1));
+            ctx.lineTo(Number(shape.x2), Number(shape.y2));
+            ctx.stroke();
+        } else if (shape['$class_name'] == "nightsky::canvas::ShapePolygon") {
+            if (shape.points.length > 0) {
+                let fill = beginPath(shape);
+                ctx.moveTo(Number(shape.points[0].x), Number(shape.points[0].y));
+                for (let i = 1; i < shape.points.length; ++ i) {
+                    ctx.lineTo(Number(shape.points[i].x), Number(shape.points[i].y));
+                }
+                ctx.closePath();
+                if (fill) ctx.fill();
+                ctx.stroke();
+            }
+        } else if (shape['$class_name'] == "nightsky::canvas::ShapeText") {
+            ctx.fillStyle = parseColor(shape.color);
+            ctx.textAlign = shape.align['$class_name'].substring('nightsky::canvas::TextAlign'.length).toLowerCase();
+            ctx.font = Number(shape.size) + 'px Arial';
+            ctx.fillText(shape.text, Number(shape.x), Number(shape.y));
+        } else if (shape['$class_name'] == "nightsky::canvas::ShapeSprite") {
+            let sprite = sprites[shape['name']]
+            if (sprite === undefined) {
+                throw "Unknown sprite '" + shape['name'] + "'"
+            }
+
+            ctx.drawImage(sprite, Number(shape['x']), Number(shape['y']))
+        } else {
+            throw "Unknown shape " + shape['$class_name']
+        }
+    }
+
+    return c
+}
+
+function hasDeepOrNull(j, key) {
+    if (typeof j == 'object') {
+        if (j[key] !== undefined) {
+            return true;
+        }
+        if (Array.isArray(j)) {
+            for (let i = 0; i < j.length; ++ i) {
+                if (hasDeepOrNull(j[i], key)) {
+                    return true;
+                }
+            }
+        }
+        else {
+            for (let k in j) {
+                if (hasDeepOrNull(j[k], key)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false
+}
+
+function renderValue(el, j, handlers) {
+    el.innerText = ''
+
+    if (j == null) {
+        el.innerText = 'null'
+    } else if (typeof j == 'object') {
+        if (j['$deep'] !== undefined) {
+            el.innerText = '...'
+        } else if (handlers[j['$class_name']] !== undefined) {
+            handlers[j['$class_name']](el, j)
+        } else {
+            let table = el.appendChild(document.createElement('table'))
+            let tbody = table.appendChild(document.createElement('tbody'))
+            for (let key in j) {
+                let tr = tbody.appendChild(document.createElement('tr'))
+                let td1 = tr.appendChild(document.createElement('td'))
+                let td2 = tr.appendChild(document.createElement('td'))
+                td1.vAlign = 'top';
+                td2.vAlign = 'top';
+                td1.appendChild(document.createElement('b')).innerText = key + ':'
+                renderValue(td2, j[key], handlers)
+            }
+        }
+    } else {
+        el.innerText = j.toString()
+    }
+}
+

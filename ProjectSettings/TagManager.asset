@@ -1,0 +1,70 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!78 &1
+TagManager:
+  serializedVersion: 2
+  tags:
+  - Edge
+  - Hasbik
+  - Laser
+  layers:
+  - Default
+  - TransparentFX
+  - Ignore Raycast
+  - 
+  - Water
+  - UI
+  - game
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  - 
+  m_SortingLayers:
+  - name: Default
+    uniqueID: 0
+    locked: 0
+  - name: New Layer 1
+    uniqueID: 1938013327
+    locked: 0
+  - name: New Layer 2
+    uniqueID: 1890084533
+    locked: 0
+  - name: Back1
+    uniqueID: 1077256753
+    locked: 0
+  - name: Back2
+    uniqueID: 4074029457
+    locked: 0
+  - name: Back3
+    uniqueID: 1667332319
+    locked: 0
+  - name: Player
+    uniqueID: 3104878631
+    locked: 0
+  - name: Ground
+    uniqueID: 3575693695
+    locked: 0
+  - name: Hasbik
+    uniqueID: 2567990813
+    locked: 0

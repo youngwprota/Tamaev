@@ -1,0 +1,1855 @@
+let contractName = "studio.acade.near";
+let appName = "Acadé Studio";
+
+let reportTargetNames = {"author": 'Submission Author', 'reviewer': 'Last Reviewer Before Challenge', 'challengers': 'Challenge Reviewers', 'specific': 'Specific Review (see in the reviews section)'}
+let reportVerdicts = ["Overhead + Penalty", "Overhead", "Overhead", "Overhead + Penalty", "Overhead + 2 Penalties", "Overhead + 3 Penalties", "Permanent Ban"];
+
+let NOPLUGIN_VERSION = 3;
+
+window.nearConfig = {
+    networkId: 'mainnet',
+    nodeUrl: 'https://rpc.acade.studio',
+    contractName: contractName,
+    walletUrl: window.location.origin + '/wallet_selector/',
+    helperUrl: 'https://helper.mainnet.near.org'
+};
+
+async function sha256(message) {
+    // encode as UTF-8
+    const msgBuffer = new TextEncoder().encode(message);                    
+
+    // hash the message
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+
+    // convert ArrayBuffer to Array
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+
+    // convert bytes to hex string                  
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    return hashHex;
+}
+
+function v3HTML(p, s, images, revealConfig) {
+    let a = [];
+    let tagStack = [];
+    let revealIds = [];
+    let answerHolders = {};
+    p.innerHTML = '';
+
+    function pushText() {
+        let cur_tag = tagStack.length > 0 ? tagStack[tagStack.length - 1] : 'p';
+        if (cur_tag != 'table' && cur_tag != 'tr') {
+            p.appendChild(document.createElement('span')).innerText = a.join('')
+        }
+    }
+
+    for (let i = 0; i < s.length; ++ i) {
+        if (s[i] == '<') {
+            let ok = false;
+            for (let tag of ['b', 'i', 'sup', 'sub', 'table', 'tr', 'td', 'code', 'tt']) {
+                if (s.substring(i, i + 2 + tag.length) == '<' + tag + '>') {
+                    pushText();
+                    a = [];
+                    p = p.appendChild(document.createElement(tag == 'code' ? 'div' : tag));
+                    if (tag == 'code') {
+                        p.style.whiteSpace = 'pre'
+                        p.style.fontFamily = 'monospace';
+                        p.style.border = '1px solid gray'
+                        p.style.borderRadius = '5px'
+                        p.style.padding = '5px'
+                        p.style.backgroundColor = '#F0F0F0'
+                    } else if (tag == 'table') {
+                        p.cellSpacing = 0;
+                        p.cellPadding = 0;
+                        p.style.border = '1px solid black';
+                    } else if (tag == 'td') {
+                        p.style.border = '1px solid black';
+                        p.style.padding = '5px';
+                    }
+
+                    tagStack.push(tag);
+                    ok = true;
+                    i += 1 + tag.length;
+
+                    if (i + 1 < s.length && s[i + 1] == '\n') {
+                        ++ i
+                    }
+                }
+            }
+            if (images && s.substring(i, i + 5) == '<img ') {
+                pushText();
+                a = [];
+                i += 4;
+                let j = i;
+                while (j < s.length && s[j] != '>') ++ j;
+                let src = s.substring(i, j).trim();
+                i = j;
+
+                let found = false
+                for (let i = 0; i < images.length; ++ i) {
+                    if (images[i].name == src) {
+                        let img = p.appendChild(document.createElement('img'));
+                        img.src = images[i].img;
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    let img = p.appendChild(document.createElement('span'));
+                    img.innerText = src
+                    img.style.color = 'darkred';
+                    img.style.border = '1px solid darkred';
+                }
+                ok = true;
+            }
+            if (s.substring(i, i + 4) == '<td ') {
+                pushText();
+                a = [];
+
+                i += 3;
+                let j = i;
+                while (j < s.length && s[j] != '>') ++ j;
+                let attrs = s.substring(i, j).trim().split(' ');
+                i = j;
+
+                p = p.appendChild(document.createElement('td'));
+                for (let j = 0; j < attrs.length; ++ j) {
+                    let lr = attrs[j].split('=');
+                    if (lr.length == 2) {
+                        lr[0] = lr[0].toLowerCase();
+                        lr[1] = lr[1].toLowerCase();
+                        if (lr[0] == 'align' && (lr[1] == 'left' || lr[1] == 'center' || lr[1] == 'right') || lr[0] == 'valign' && (lr[1] == 'top' || lr[1] == 'bottom' || lr[1] == 'middle')) {
+                            if (lr[0] == 'valign') lr[0] = 'vAlign';
+                            p[lr[0]] = lr[1];
+                        } else if (lr[0] == 'rowspan' || lr[0] == 'colspan') {
+                            let num = parseInt(lr[1]);
+                            if (!isNaN(num) && num >= 1 && num <= 20) {
+                                p[lr[0].substring(0, 3) + 'Span'] = lr[1];
+                            }
+                        }
+                    }
+                }
+
+                p.style.border = '1px solid black';
+                p.style.padding = '5px';
+
+                tagStack.push('td');
+                ok = true;
+            }
+            if (!!revealConfig && s.substring(i, i + 8) == '<reveal ') {
+                pushText();
+                a = [];
+
+                i += 7;
+                let j = i;
+                while (j < s.length && s[j] != '>') ++ j;
+                let id = s.substring(i, j).trim();
+                i = j;
+
+                let rspan = p.appendChild(document.createElement('span'));
+
+                if (revealConfig['answers'][id] === undefined) {
+                    rspan.style.backgroundColor = '#F0F0F0';
+                    rspan.style.color = 'gray';
+                    rspan.style.border = '1px solid silver';
+                    rspan.style.borderRadius = '5px';
+                    rspan.style.padding = '0px 4px 0px 4px';
+                    rspan.style.cursor = 'pointer';
+                    rspan.style.display = 'inline-block';
+
+                    rspan.onclick = function() {
+                        revealConfig['onclick'](rspan, id);
+                    }
+
+                    if (revealConfig.isEditor) {
+                        let idHolder = p.appendChild(document.createElement('sub'));
+                        idHolder.style.color = 'gray';
+                        idHolder.style.marginLeft = '2px';
+                        idHolder.innerText = id;
+                    }
+
+                    answerHolders[id] = rspan;
+
+                    p = rspan;
+                } else {
+                    v3HTML(rspan, revealConfig['answers'][id], images)
+                    // Create an invisible element to hide the hint for the reveal
+                    p = p.appendChild(document.createElement('span'));
+                    p.style.display = 'none';
+                }
+
+                tagStack.push('reveal');
+                ok = true;
+
+                revealIds.push(id);
+            }
+            if (ok) continue;
+
+            if (tagStack.length > 0 && s.substring(i, i + 3 + tagStack[tagStack.length - 1].length) == '</' + tagStack[tagStack.length - 1] + '>') {
+                pushText();
+                a = [];
+                p = p.parentElement;
+                i += 2 + tagStack[tagStack.length - 1].length;
+                let oldTag = tagStack.pop();
+                ok = true;
+
+                if ((oldTag == 'table' || oldTag == 'code') && i + 1 < s.length && s[i + 1] == '\n') {
+                    // Consume one linebreak after </table>
+                    ++ i;
+                }
+            }
+
+            if (!ok) {
+                a.push('<');
+            }
+        } else if (s[i] == '&') {
+            if (s.substring(i, i + 5) == '&amp;') {
+                a.push('&');
+                i += 4;
+            } else if (s.substring(i, i + 4) == '&lt;') {
+                a.push('<');
+                i += 3;
+            } else if (s.substring(i, i + 4) == '&gt;') {
+                a.push('>');
+                i += 3;
+            } else if (s.substring(i, i + 11) == '&Backslash;') {
+                a.push('\\');
+                i += 10;
+            } else {
+                a.push(s[i]);
+            }
+        } else if (s[i] == '\\' && s.substring(i, i + 2) == '\\(') {
+            pushText();
+            a = [];
+            i += 2;
+            let j = i;
+            while (j < s.length && (j + 1 == s.length || s[j] != '\\' || s[j + 1] != ')')) ++ j;
+            let formula = s.substring(i, j).trim();
+            i = Math.min(s.length, j + 1);
+            let formulaHolder = p.appendChild(document.createElement('span'));
+            katex.render(formula, formulaHolder, {throwOnError: false});
+            ok = true;
+
+        } else {
+            a.push(s[i]);
+        }
+    }
+    pushText();
+
+    let ret = {}
+    if (revealConfig) {
+        ret['revealIds'] = revealIds
+    }
+    return ret;
+}
+
+function appendHTML(holder, html, images, revealConfig) {
+    let h = holder.appendChild(document.createElement('span'));
+    return v3HTML(h, html, images, revealConfig);
+}
+
+function delayedButton(btn, c1, c2, callback, ctrlCallback) {
+    let progress = 0;
+    let pressed = false;
+    let activated = false;
+    let tm = null;
+    function stop() {
+        btn.style.backgroundImage = 'none';
+        btn.style.backgroundColor = c1;
+        clearInterval(tm);
+        progress = 0;
+        pressed = false;
+    }
+    btn.onmousedown = function(e) {
+        if (ctrlCallback && (e.ctrlKey || e.metaKey)) {
+            ctrlCallback(e);
+            return;
+        }
+        progress = 0;
+        pressed = true;
+        activated = false;
+        clearInterval(tm);
+        tm = setInterval(function() {
+            progress += 2
+            if (progress >= 100) {
+                clearTimeout(tm);
+                progress = 100;
+                activated = true;
+                callback();
+            }
+            btn.style.backgroundImage = "linear-gradient(to right, " + c2 + " " + progress + "%, " + c1 + " " + progress + "%)"
+        }, 50)
+    }
+
+    btn.onmouseup = function() {
+        if (pressed && !activated) {
+            alert("Hold the button longer");
+        }
+        stop();
+    }
+    btn.onmouseleave = stop;
+
+    stop();
+}
+
+
+async function errorOut(e) {
+    document.body.innerHTML = '<br><br><center><font color=darkred>Something went wrong!<br><br>'
+    let msg = e['message'] ? e['message'] : e;
+    let pos = msg.indexOf(', src');
+    if (pos != -1) {
+        msg = msg.substr(0, pos);
+    }
+    let center = document.body.appendChild(document.createElement('center'));
+    v3HTML(center, msg);
+
+    center.appendChild(document.createElement('br'))
+    center.appendChild(document.createElement('br'))
+
+    let btn = center.appendChild(document.createElement('button'))
+    btn.innerText = 'Refresh'
+    btn.onclick = start
+    throw e;
+}
+
+async function v3do(j) {
+    try {
+        let payload = JSON.stringify(j);
+        let hash = await sha256(payload);
+
+        let arr = await nearApi.transactions.signTransaction(contractName, 0, [nearApi.transactions.functionCall('v3', {"hash": hash}, 0, 0)], new Uint8Array(32), window.walletAccount._near.connection.signer, window.accountId, window.nearConfig.networkId)
+        let encodedTx = btoa(String.fromCharCode.apply(null, arr[1].encode()));
+        let response = await fetch('/v3/' + encodeURIComponent(encodedTx), {"method": "POST", 'headers': { 'Content-Type': 'application/json' }, "body": payload});
+        if (!response.ok) {
+            let text = await response.text();
+            if (text.startsWith('Traceback')) {
+                text = text.trim().split('\n').splice(-1)[0];
+            }
+            throw Error("Request to server failed with: " + response.statusText + "\n\n" + text);
+        }
+        let jout = JSON.parse(await response.text());
+        if (jout['eval']) {
+            eval(jout['eval'])
+        }
+        if (jout['error']) {
+            throw jout['error']
+        }
+        if (jout['warn']) {
+            alert(jout['warn'])
+        }
+        return jout
+    } catch(e) {
+        await errorOut(e);
+    }
+}
+
+function dlstmt(fname) {
+    function callback(data) {
+      var blob = new Blob([data]);
+      var downloadUrl = URL.createObjectURL(blob);
+
+      var a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+
+      // Cleanup
+      setTimeout(function() {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(downloadUrl);
+      }, 100);
+    }
+
+    window.contract.account.signTransaction('studio.acade.near', [nearApi.transactions.functionCall('stmt', {'fname': fname}, 0, 0)]).then(arr => {
+        let encodedTx = btoa(String.fromCharCode.apply(null, arr[1].encode()));
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", '/stmt/' + encodeURIComponent(encodedTx), true);
+        xhr.responseType = "blob";
+
+        xhr.onload = function() {
+            if (xhr.status == 200) {
+                callback(xhr.response);
+            } else {
+                errorOut('Status: ' + xhr.status);
+            }
+        }
+        xhr.onerror = errorOut;
+
+        xhr.send();
+    }).catch(errorOut);
+}
+
+function createV3PillarSetEditor(here, original, config) {
+    config = config || {}
+    readonly = config['readonly'] || false;
+
+    here.innerText = '';
+    here.style.userSelect = 'none'
+    here.style.overflow = 'hidden'
+
+    let canvas = here.appendChild(document.createElement('canvas'))
+    canvas.style.position = 'absolute';
+    canvas.style.left = '0px'
+    canvas.style.top = '0px'
+    let ctx = canvas.getContext('2d')
+
+    function resizeCanvasAndRedrawConnections() {
+        canvas.style.width = here.offsetWidth + 'px'
+        canvas.style.height = here.offsetHeight + 'px'
+        canvas.width = here.offsetWidth
+        canvas.height = here.offsetHeight
+        redrawConnections()
+    }
+
+    window.addEventListener('resize', resizeCanvasAndRedrawConnections)
+
+    let actual = JSON.parse(JSON.stringify(original));
+
+    let bgColors = {
+        'Comment': '#ffffcc',
+        'Annotate': '#E0E0E0',
+        'Exercises': '#ccccff',
+        'Video': '#cceedd',
+        'Chapter': '#FFFFFF',
+    };
+
+    let selectedNode = null;
+    let selectedConnection = null;
+    let nodeIdToEl = {}
+    let nodesMap = {}
+    let corners = [];
+    let mousemove = null;
+    let mouseup = null;
+    let pendingConnection = null;
+
+    let scrollX = 0;
+    let scrollY = 0;
+
+    for (let i = 0; i < 9; ++ i) {
+        let localI = i;
+        let corner = document.createElement('span')
+        corners.push(corner);
+
+        corner.style.width = '12px'
+        corner.style.height = '12px'
+        corner.style.boxSizing = 'border-box'
+        corner.style.position = 'absolute'
+        corner.style.border = '1px solid black'
+        corner.style.backgroundColor = 'white'
+        corner.style.display = 'none';
+        corner.style.zIndex = 1
+
+        let sx, sy, dragging = false;
+        corner.onmousedown = function(e) {
+            e.stopPropagation()
+            if (readonly) return;
+            dragging = true;
+            sx = e.pageX;
+            sy = e.pageY;
+
+            mousemove = function(e) {
+                if (dragging && selectedNode) {
+                    let nx = e.pageX;
+                    let ny = e.pageY;
+
+                    let row = Math.floor(localI / 3);
+                    let col = i % 3;
+
+                    if (selectedNode) {
+                        if (col == 2) { selectedNode.w += nx - sx }
+                        else if (col == 0) { selectedNode.w -= nx - sx; selectedNode.x += nx - sx }
+                        if (row == 2) { selectedNode.h += ny - sy }
+                        else if (row == 0) { selectedNode.h -= ny - sy; selectedNode.y += ny - sy }
+
+                        let xd = 100 - selectedNode.w;
+                        let yd = 80 - selectedNode.h;
+                        if (xd > 0 && col != 1) {
+                            selectedNode.w += xd;
+                            if (col == 0) { selectedNode.x -= xd; nx -= xd; }
+                            else if (col == 2) { nx += xd }
+                        }
+                        if (yd > 0 && row != 1) {
+                            selectedNode.h += yd;
+                            if (row == 0) { selectedNode.y -= yd; ny -= yd; }
+                            else if (row == 2) { ny += yd }
+                        }
+                    }
+
+                    sx = nx;
+                    sy = ny;
+
+                    updateSelected(selectedNode)
+                    repositionNode(selectedNode)
+                    redrawConnections()
+                }
+            }
+
+            mouseup = function() { dragging = false; mousemove = null; mouseup = null; }
+
+            return false;
+        }
+
+        here.appendChild(corner)
+    }
+
+    function updateSelected(node) {
+        selectedNode = node;
+        if (config['editor']) config['editor'].innerText = ''
+        if (!node) {
+            for (let i = 0; i < 9; ++ i) {
+                corners[i].style.display = 'none';
+            }
+        } else {
+            for (let i = 0; i < 9; ++ i) {
+                if (i == 4) continue;
+                corners[i].style.display = '';
+                corners[i].style.left = node.x + Math.floor(node.w * (i % 3) / 2) - 6 - scrollX + 'px'
+                corners[i].style.top = node.y + Math.floor(node.h * (Math.floor(i / 3)) / 2) - 6 - scrollY + 'px'
+            }
+            if (config['editor']) {
+                let el = config['editor']
+                el.appendChild(document.createElement('b')).innerText = 'Kind: ';
+                el.appendChild(document.createElement('span')).innerText = node.kind;
+
+                el.appendChild(document.createElement('b')).innerText = '\nText:\n';
+                let txt = el.appendChild(document.createElement('textarea'));
+                el.appendChild(document.createElement('b')).innerText = '\nComment:\n';
+                let txt2 = el.appendChild(document.createElement('textarea'));
+                txt.onkeyup = function(e) { e.stopPropagation() }
+                txt.rows = 10;
+                txt.style.width = '90%'
+                txt2.onkeyup = function(e) { e.stopPropagation() }
+                txt2.rows = 10;
+                txt2.style.width = '90%'
+                txt.value = node.text;
+                txt2.value = node.comment || "";
+                txt.readOnly = readonly;
+                txt2.readOnly = readonly;
+                txt.onchange = function() {
+                    node.text = txt.value;
+                    redrawNode(node)
+                }
+                txt2.onchange = function() {
+                    node.comment = txt2.value;
+                    redrawNode(node)
+                }
+            }
+        }
+    }
+
+    function repositionNode(node) {
+        let span = nodeIdToEl[node.id]
+        span.style.left = (node.x - scrollX) + 'px'
+        span.style.top = (node.y - scrollY) + 'px'
+        span.style.width = node.w + 'px'
+        span.style.height = node.h + 'px'
+    }
+
+    function redrawNode(node) {
+        nodeIdToEl[node.id].innerText = node.text;
+        if (node.comment) {
+            let commentSpan = nodeIdToEl[node.id].appendChild(document.createElement('small'))
+            commentSpan.innerText = '\n' + node.comment
+        }
+        repositionNode(node)
+
+        if (node.kind != 'Comment' && !readonly) {
+            let depEl = nodeIdToEl[node.id].appendChild(document.createElement('span'))
+            depEl.style.position = 'absolute'
+            depEl.style.left = '50%'
+            depEl.style.top = '0'
+            depEl.style.transform = 'translate(-50%, -1px)'
+            depEl.style.width = '36px'
+            depEl.style.height = '18px'
+            depEl.style.border = '1px solid black'
+            depEl.style.backgroundColor = '#808080'
+            depEl.style.borderRadius = '0 0 18px 18px'
+
+            depEl.onmousedown = function(e) {
+                pendingConnection = {'from': node, 'x': e.pageX, 'y': e.pageY}
+                mousemove = function(e) {
+                    pendingConnection.x = e.pageX;
+                    pendingConnection.y = e.pageY;
+                    redrawConnections()
+                }
+                mouseup = function(e) {
+                    mousemove = null;
+                    mouseup = null;
+                    pendingConnection = null;
+                    redrawConnections()
+                }
+                e.stopPropagation()
+            }
+
+            depEl.onmouseup = function(e) {
+                if (pendingConnection && pendingConnection.from.id == node.id) {
+                    if (config.editor) {
+                        updateSelected(null)
+                        let redrawConnEditor = function() {
+                            config.editor.innerText = ''
+                            config.editor.appendChild(document.createElement('b')).innerText = 'Connections:\n'
+                            let ul = config.editor.appendChild(document.createElement('ul'))
+                            let seen = 0
+                            for (let i = 0; i < actual.connections.length; ++ i) {
+                                let conn = actual.connections[i];
+                                if (conn.from == node.id) {
+                                    let li = ul.appendChild(document.createElement('li'))
+                                    li.innerText = nodesMap[conn.to]['text'] + '\n';
+                                    let delBtn = ul.appendChild(document.createElement('button'))
+                                    delBtn.innerText = 'Delete'
+                                    delBtn.onclick = function() {
+                                        for (let j = i + 1; j < actual.connections.length; ++ j) {
+                                            actual.connections[j - 1] = actual.connections[j]
+                                        }
+                                        actual.connections.pop()
+                                        redrawConnections()
+                                        redrawConnEditor()
+                                    }
+                                }
+                            }
+                        }
+                        redrawConnEditor()
+                    }
+                    mousemove = null
+                    mouseup = null
+                    pendingConnection = null;
+                    e.stopPropagation()
+                }
+            }
+        }
+    }
+
+    function renderNode(node) {
+        let span = here.appendChild(document.createElement('span'))
+        nodeIdToEl[node.id] = span
+        nodesMap[node.id] = node
+
+        span.style.position = 'absolute';
+        span.style.border = '1px solid black'
+        redrawNode(node)
+
+        span.style.boxShadow = '0 0 10px rgba(0, 0, 0, 0.3)'
+        span.style.borderRadius = '5px'
+        span.style.padding = '10px'
+        span.style.paddingTop = '22px'
+
+        span.style.backgroundColor = bgColors[node.kind]
+
+        span.style.overflow = 'hidden'
+        span.style.boxSizing = 'border-box'
+
+        let sx = 0, sy = 0, dragging = false, predragging = false;
+        span.onmousedown = function(e) {
+            updateSelected(node)
+            e.stopPropagation()
+            if (readonly) return;
+            predragging = true;
+            sx = e.pageX;
+            sy = e.pageY;
+            mouseup = function(e) {
+                predragging = false;
+                if (dragging) {
+                    dragging = false;
+                    mousemove = null;
+                    mouseup = null;
+                }
+            }
+            return false;
+        }
+        span.onmousemove = function(e) {
+            if (mousemove) {
+                return;
+            }
+
+            if (config['hintbar']) {
+                config['hintbar'].innerText = node.text
+                if (node.comment) {
+                    let commentSpan = hintbar.appendChild(document.createElement('small'))
+                    commentSpan.innerText = '\n' + node.comment
+                }
+            }
+            if (predragging) {
+                if (Math.abs(sx - e.pageX) + Math.abs(sy - e.pageY) > 5) {
+                    dragging = true;
+                    mousemove = function(e) {
+                        if (dragging && selectedNode) {
+                            selectedNode.x += e.pageX - sx;
+                            selectedNode.y += e.pageY - sy;
+                            sx = e.pageX;
+                            sy = e.pageY;
+                            updateSelected(selectedNode)
+                            repositionNode(selectedNode)
+                            redrawConnections()
+                        }
+                    }
+                }
+            }
+            e.stopPropagation()
+        }
+
+        span.onmouseup = function(e) {
+            if (pendingConnection && node.kind != 'Comment' && pendingConnection.from.id != node.id) {
+                let exists = false;
+                for (let conn of actual.connections) {
+                    if (conn.from == pendingConnection.from.id && conn.to == node.id) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    actual.connections.push({'from': pendingConnection.from.id, 'to': node.id})
+                    pendingConnection = null;
+                    mousemove = null;
+                    mouseup = null;
+                    redrawConnections()
+                    e.stopPropagation()
+                }
+            }
+        }
+    }
+
+    function redrawConnections() {
+        ctx.clearRect(0, 0, here.offsetWidth, here.offsetHeight);
+        ctx.strokeStyle = '#606060'
+        ctx.lineWidth = 2
+        for (let connection of actual.connections) {
+            let fr = nodesMap[connection.from]
+            let to = nodesMap[connection.to]
+    
+            ctx.beginPath()
+            ctx.moveTo(fr.x + Math.floor(fr.w / 2) - scrollX, fr.y - scrollY)
+            ctx.lineTo(to.x + Math.floor(to.w / 2) - scrollX, to.y + to.h - scrollY)
+            ctx.stroke()
+        }
+
+        if (pendingConnection) {
+            let fr = pendingConnection.from;
+            ctx.beginPath()
+            ctx.moveTo(fr.x + Math.floor(fr.w / 2) - scrollX, fr.y - scrollY)
+            ctx.lineTo(pendingConnection.x - here.offsetLeft, pendingConnection.y - here.offsetTop)
+            ctx.stroke()
+        }
+    }
+
+    function addNode(node) {
+        actual.nodes.push(node)
+        renderNode(node)
+    }
+
+    function genId() {
+        let ret = '';
+        for (let i = 0; i < 6; ++ i) {
+            ret += String.fromCharCode(97 + Math.floor(Math.random() * 26))
+        }
+        return ret;
+    }
+
+    function addNodeWithKind(kind, text) {
+        let id = genId();
+        while (true) {
+            let ok = true;
+            for (let i = 0; i < actual.nodes.length; ++ i) {
+                if (actual.nodes[i].id == id) ok = false;
+            }
+            for (let i = 0; i < original.nodes.length; ++ i) {
+                if (original.nodes[i].id == id) ok = false;
+            }
+            if (ok) break;
+            id = genId()
+        }
+
+        let node = {'w': 200, 'h': 140, 'text': text, 'id': id, 'x': 20, 'y': 20, 'kind': kind};
+        while (true) {
+            let ok = true;
+            for (let i = 0; i < actual.nodes.length; ++ i) {
+                if (Math.abs(node.x - actual.nodes[i].x) + Math.abs(node.y - actual.nodes[i].y) < 30) ok = false;
+            }
+            if (ok) break;
+            node.y += 20;
+            if (node.y >= 1000) {
+                node.y = 20;
+                node.x += 20;
+            }
+        }
+        addNode(node)
+    }
+
+    function deleteNode(node) {
+        let span = nodeIdToEl[node.id];
+        here.removeChild(span);
+        let found = false;
+        for (let i = 0; i < actual.nodes.length; ++ i) {
+            if (actual.nodes[i].id == node.id) {
+                found = true;
+            } else if (found) {
+                actual.nodes[i - 1] = actual.nodes[i]
+            }
+        }
+        if (found) { actual.nodes.pop() }
+        else { console.error('Node not found when deleting') }
+
+        let skip = 0;
+        for (let i = 0; i < actual.connections.length; ++ i) {
+            if (actual.connections[i].from == node.id || actual.connections[i].to == node.id) {
+                ++ skip
+            } else if (skip > 0) {
+                actual.connections[i - skip] = actual.connections[i]
+            }
+        }
+        for (let i = 0; i < skip; ++ i) {
+            actual.connections.pop()
+        }
+
+        if (node.id == selectedNode.id) {
+            updateSelected(null)
+        }
+
+        redrawConnections()
+    }
+
+    for (let node of actual['nodes']) {
+        renderNode(node)
+    }
+
+    here.onmousedown = function(e) {
+        updateSelected(null);
+        let sx = e.pageX; let sy = e.pageY;
+        mousemove = function(e) {
+            scrollX -= e.pageX - sx;
+            scrollY -= e.pageY - sy;
+            sx = e.pageX;
+            sy = e.pageY;
+            for (let node of actual.nodes) {
+                repositionNode(node)
+            }
+            redrawConnections();
+        }
+        mouseup = function() { mousemove = null; mouseup = null; }
+    }
+    here.onmousemove = function(e) { if (mousemove) { mousemove(e) } if (config['hintbar']) config['hintbar'].innerText = '' }
+    here.onmouseup = function(e) { if (mouseup) { mouseup(e) } }
+
+    document.addEventListener('keyup', function(e) {
+        if ((e.keyCode == 46 || e.keyCode == 8) && selectedNode && !readonly) {
+            deleteNode(selectedNode)
+        }
+    })
+
+    resizeCanvasAndRedrawConnections()
+
+    let ret = {'addNodeWithKind': addNodeWithKind, 'onresize': resizeCanvasAndRedrawConnections}
+    return ret;
+}
+async function connect() {
+    window.near = await nearApi.connect(Object.assign(nearConfig, { deps: { keyStore: new nearApi.keyStores.BrowserLocalStorageKeyStore() }}));
+  
+    // Needed to access wallet login
+    window.walletAccount = new nearApi.WalletConnection(window.near);
+    window.accountId = walletAccount.getAccountId();
+  
+    // Initializing our contract APIs by contract name and configuration.
+    window.contract = await new nearApi.Contract(walletAccount.account(), nearConfig.contractName, {
+        viewMethods: ['nonce'],
+        changeMethods: ['withdraw', 'withdraw_to'],
+        sender: window.walletAccount.getAccountId()
+    });
+  
+    if (!walletAccount.isSignedIn()) {
+        document.getElementById('btn_sign_in').onclick = initiateSignIn;
+        document.getElementById('signed_out').style.display = '';
+    } else {
+        start()
+    }
+}
+
+function initiateSignIn() {
+    walletAccount.requestSignIn(
+      contractName,
+      appName
+    );
+}
+
+function formatMicroNear(x) {
+    function pad1(x) { if (x % 10 == 0) return pad(x / 10); if (x < 10) return '00' + x; if (x < 100) return '0' + x; return x; }
+    function pad(x) { if (x < 10) return '0' + x; return x }
+    if (x >= 1000) { return "Ⓝ " + (Math.floor(x / 1000)) + '.' + (x % 1000 == 0 ? "00" : pad1(((x % 1000)))) }
+    else {
+        return "Ⓝ 0." + pad1(x);
+    }
+}
+
+function clickify(spans) {
+    for (let i = 0; i < spans.length; ++ i) {
+        spans[i].classList.add('btnlink');
+    }
+}
+
+function onlyKey(dict) {
+    for (let key in dict) {
+        return key
+    }
+}
+
+function processSaveQueue(saveState) {
+    if (saveState.saving) {
+        return;
+    }
+
+    if (saveState.queue.length == 0) {
+        saveState.saveStatusHolder.innerText = '';
+        return;
+    }
+
+    if (!saveState.saving) {
+        window.onbeforeunload = saveState.unloadhandler
+    }
+
+    saveState.saving = true;
+    let what = saveState.queue.shift();
+    v3do({"action": "save", "update": what.update, "version": saveState.version}).then(function(data) {
+        if (what.callback) {
+            try {
+                what.callback(data)
+            } catch(e) {
+                console.error(e)
+            }
+        }
+        saveState.saving = false;
+        window.onbeforeunload = null
+        saveState.version += 1
+        processSaveQueue(saveState)
+    });
+
+    let tm = setInterval(function() {
+        if (!saveState.saving) {
+            clearInterval(tm)
+        } else {
+            v3HTML(saveState.saveStatusHolder, '<i>Saving ' + (1 + saveState.queue.length) + " updates...</i>")
+        }
+    }, 500)
+}
+
+function saveUpdate(update, idempotent, saveState, optionalCallback) {
+    if (!saveState.unloadhandler) {
+        saveState.unloadhandler = function() {
+            return "There are unsaved changes, do you want to close the tab?"
+        }
+    }
+    window.onbeforeunload = saveState.unloadhandler
+
+    if (saveState.delayed) {
+        let oldKey = onlyKey(saveState.delayed.update);
+        let newKey = onlyKey(update);
+        if (oldKey != newKey || !idempotent) {
+            saveState.queue.push(saveState.delayed);
+            processSaveQueue(saveState);
+            saveState.delayed = null;
+        }
+    }
+
+    saveState.delayed = {"update": update};
+    if (optionalCallback) {
+        saveState.delayed.callback = optionalCallback
+    }
+
+    clearTimeout(saveState.tm)
+    saveState.tm = setTimeout(function() {
+        if (saveState.delayed) {
+            saveState.queue.push(saveState.delayed);
+            processSaveQueue(saveState);
+            saveState.delayed = null;
+        }
+    }, optionalCallback ? 50 : 500);
+}
+
+function addTimer(holder, seconds, callback) {
+    let started = new Date().getTime();
+    let here = holder.appendChild(document.createElement('span'));
+    function moo(x, p60) {
+        x = Math.floor(x);
+        if (p60) {
+            x = x % 60;
+        }
+        if (x < 10) return '0' + x;
+        return x;
+    }
+    let tm = null;
+    function update() {
+        let remaining = Math.floor(seconds - (new Date().getTime() - started) / 1000.0);
+        if (remaining <= 0) {
+            here.innerText = '00:00:00';
+            callback()
+            clearInterval(tm);
+        } else {
+            here.innerText = moo(remaining / 3600.0) + ":" + moo(remaining / 60.0, true) + ':' + moo(remaining, true)
+        }
+    }
+    update();
+    tm = setInterval(update, 250);
+    return here;
+}
+
+function createFixedPane(withCloseBtn) {
+    let pane = document.body.appendChild(document.createElement('div'));
+    pane.style.position = 'fixed';
+    pane.style.left = '10px';
+    pane.style.right = '10px';
+    pane.style.top = '10px';
+    pane.style.bottom = '10px';
+    pane.style.border = '2px solid black'
+    pane.style.backgroundColor = '#FFFFFF'
+    pane.style.padding = '10px'
+    pane.style.overflow = 'scroll'
+    pane.style.zIndex = '10'
+    if (withCloseBtn) {
+        let closeBtn = pane.appendChild(document.createElement('button'));
+        closeBtn.innerText = 'Close';
+        closeBtn.onclick = function() { pane.style.display = 'none' }
+    }
+    return pane;
+}
+
+function createReportHandler(holder, utid, whom, is_multiling) {
+    let reason = '';
+    return function() {
+        v3HTML(holder, 'You are reporting <b>' + reportTargetNames[whom] + '</b>\n')
+        holder.style.display = '';
+        holder.style.border = '1px solid black'
+        holder.style.borderRadius = '5px'
+        holder.style.background = '#F0F0F0'
+        holder.style.padding = '10px'
+        let translateSpan;
+        if (is_multiling) {
+            translateSpan = holder.appendChild(document.createElement('span'));
+            appendHTML(holder, '\n')
+        }
+        let editorCell = createEditorCell(holder, reason, null, {saveCallback: function(x) { reason = x; }})
+        if (is_multiling) {
+            editorCell.add_translate_elems(translateSpan);
+        }
+        let btnSubmit = holder.appendChild(document.createElement('button'))
+        let btnClose = holder.appendChild(document.createElement('button'))
+        btnSubmit.style.marginRight = '10px'
+        btnSubmit.innerText = 'Submit'
+        delayedButton(btnSubmit, '#F0F0F0', '#D0D0D0', function() {
+            v3HTML(holder, '<i>Submitting</i>')
+            v3do({"action": "report", "utid": utid, "comment": reason, "whom": whom}).then(x => {
+                v3HTML(holder, '<b>Report Submitted</b>\n\n')
+                holder.appendChild(btnClose);
+                btnClose.innerText = 'Close'
+            })
+        })
+        btnClose.innerText = 'Cancel'
+        btnClose.onclick = function() { holder.style.display = 'none' }
+    }
+}
+
+function previewTask(task) {
+    let pane = createFixedPane(true);
+    showTask(pane, task['task_id'], task, true, null)
+}
+
+function showOverheadLogs(holder, j) {
+    let logs = j['overhead']
+    let pens = j['penalties']
+
+    holder.innerText = ''
+    let closeBtn = holder.appendChild(document.createElement('button'));
+    closeBtn.onclick = start
+    closeBtn.innerText = 'Close'
+    appendHTML(holder, '\n\n');
+
+    let showOverheadLogsTitle = false;
+
+    if (j['next_overhead_reset_level'] !== undefined) {
+        if (j['next_overhead_reset_level'] > j['cur_level']) {
+            appendHTML(holder, "<b>Reset Overhead</b>\nYou can subtract Ⓝ 10 from your overhead (either tasks or reviews) <i>and balance</i> at level <b>" + j['next_overhead_reset_level'] + "</b>\n\n")
+        } else {
+            appendHTML(holder, "<b>Reset Overhead</b>\nYou can subtract Ⓝ 10 from your overhead <i>and balance</i>.\n\n")
+            let btn1 = holder.appendChild(document.createElement('button'))
+            let btn2 = holder.appendChild(document.createElement('button'))
+            btn1.innerText = 'Reduce Tasks Overhead'
+            btn2.innerText = 'Reduce Reviews Overhead'
+            btn2.style.marginLeft = '10px'
+            delayedButton(btn1, '#F0F0F0', '#D0D0D0', function() { if (confirm('Are you sure you want to subtract up to Ⓝ 10 from your tasks overhead AND YOUR BALANCE?')) v3do({'action': 'reset_overhead', 'which': 'tasks'}).then(start) })
+            delayedButton(btn2, '#F0F0F0', '#D0D0D0', function() { if (confirm('Are you sure you want to subtract up to Ⓝ 10 from your tasks overhead AND YOUR BALANCE?')) v3do({'action': 'reset_overhead', 'which': 'reviews'}).then(start) })
+            appendHTML(holder, '\n\n')
+        }
+        showOverheadLogsTitle = true;
+    }
+
+    if (pens.length > 0) {
+        appendHTML(holder, "<b>Penalties</b>\n")
+        for (let i = 0; i < pens.length; ++ i) {
+            appendHTML(holder, "<b>" + (i + 1) + ":</b> [" + pens[i].when + "] " + pens[i].task_name + " ");
+            let btn = holder.appendChild(document.createElement('span'))
+            clickify([btn])
+            btn.innerText = 'Show report'
+            btn.onclick = function() { v3do({"action": "preview_report", "report_id": pens[i]['report_id']}).then(previewTask) }
+            appendHTML(holder, "\n")
+        }
+        showOverheadLogsTitle = true;
+        appendHTML(holder, "\n")
+    }
+
+    if (showOverheadLogsTitle) {
+        appendHTML(holder, "<b>Overhead Logs</b>\n")
+    }
+
+    if (logs.length == 0) {
+        appendHTML(holder, "<i>No records to show</i>")
+    } else {
+        for (let i = 0; i < logs.length; ++ i) {
+            appendHTML(holder, "<b>" + (i + 1) + ":</b> [" + logs[i].when + "] " + logs[i].task_name + ' <b>' + formatMicroNear(logs[i].mnear) + "</b> " + logs[i].comment + " ");
+            let btn = holder.appendChild(document.createElement('span'))
+            clickify([btn])
+            btn.innerText = 'Show task'
+            btn.onclick = function() { v3do({"action": "preview_ovehead_task", "log_id": logs[i]['log_id']}).then(previewTask) }
+            appendHTML(holder, "\n")
+        }
+    }
+}
+
+function showAllReports(holder, j) {
+    let reports = j['reports']
+
+    holder.innerText = ''
+    let closeBtn = holder.appendChild(document.createElement('button'));
+    closeBtn.onclick = start
+    closeBtn.innerText = 'Close'
+    appendHTML(holder, '\n\nThis page shows all the reports that have been submitted and reviewed in the last two weeks.\n\n');
+
+    if (reports.length == 0) {
+        appendHTML(holder, "<i>No records to show</i>")
+    } else {
+        for (let i = 0; i < reports.length; ++ i) {
+            appendHTML(holder, "<b>" + (i + 1) + ":</b> [" + reports[i].when + "] " + reports[i].task_name + "; Reported: <b>" + reportTargetNames[reports[i].whom] + '</b>; Final verdict: ');
+            let finalVerdictSpan = holder.appendChild(document.createElement('b'))
+            finalVerdictSpan.style.color = (reports[i].final_outcome < 2) ? "darkgreen" : "darkred"
+            finalVerdictSpan.innerText = reportVerdicts[reports[i].final_outcome] + " to " + ((reports[i].final_outcome < 2) ? "Reporter" : "Reportees")
+            appendHTML(holder, "\nReport: " + reports[i].comment + '\n');
+            let btn = holder.appendChild(document.createElement('span'))
+            clickify([btn])
+            btn.innerText = 'Show details'
+            btn.onclick = function() { v3do({"action": "preview_report", "report_id": reports[i]['report_id']}).then(previewTask) }
+            appendHTML(holder, "\n\n\n")
+        }
+    }
+}
+
+function showDocSelector(holder, task_id, task_name) {
+    appendHTML(holder, '\n\nDocumentation:\n')
+    let ul = holder.appendChild(document.createElement('ul'))
+    function entry(caption, v) {
+        let li = ul.appendChild(document.createElement('li'))
+        let a = li.appendChild(document.createElement('span'))
+        clickify([a])
+        a.innerText = caption
+        a.onclick = function() {
+            v3do({'action': 'doc', 'v': v}).then(j => {
+                if (v == 'noplugin') {
+                    window.localStorage.setItem('v3noplugin', NOPLUGIN_VERSION)
+                }
+                holder.innerText = '';
+                let closeBtn = holder.appendChild(document.createElement('button'));
+                closeBtn.innerText = 'Close';
+                closeBtn.onclick = start;
+                appendHTML(holder, "\n\n" + j['content'], j['images'])
+            })
+        }
+    }
+    entry('How Acadé Studio works', 'v3');
+    entry('Documentation for ' + task_name, '' + task_id);
+    if (task_id == 420) {
+        entry('Documentation for SimpleScript', 'simplescript');
+    }
+    appendHTML(ul, '\n')
+    entry('Important: rules and policies', 'noplugin');
+
+    if (task_id == 420) {
+        appendHTML(ul, '\n')
+
+        let li = ul.appendChild(document.createElement('li'))
+        let a = li.appendChild(document.createElement('span'))
+        clickify([a])
+        a.innerText = 'Explore library'
+        a.onclick = function() {
+            v3HTML(holder, '<i>Loading...</i>')
+            v3do({'action': 'nslib'}).then(funcs => {
+                function showFuncs() {
+                    holder.innerText = '';
+                    let closeBtn = holder.appendChild(document.createElement('button'));
+                    closeBtn.innerText = 'Close';
+                    closeBtn.onclick = start;
+
+                    let ul = holder.appendChild(document.createElement('ul'))
+                    for (let prefix of funcs['prefixes']) {
+                        let li = ul.appendChild(document.createElement('li'))
+                        let a = li.appendChild(document.createElement('span'))
+                        clickify([a])
+                        a.innerText = prefix
+                        a.onclick = function() {
+                            v3do({'action': 'nslib', 'prefix': prefix}).then(j => {
+                                holder.innerText = '';
+                                let backBtn = holder.appendChild(document.createElement('button'));
+                                backBtn.innerText = 'Back';
+                                backBtn.onclick = showFuncs;
+
+                                let code = holder.appendChild(document.createElement('pre'))
+                                code.innerText = j['code']
+                            }).catch(errorOut)
+                        }
+                    }
+                }
+                showFuncs()
+            }).catch(errorOut)
+        }
+    }
+
+    v3do({'action': 'examples'}).then(j => {
+        if (j["examples"].length) {
+            appendHTML(holder, '\nExamples:\n')
+            let ul = holder.appendChild(document.createElement('ul'))
+            for (let i = 0; i < j["examples"].length; ++ i) {
+                let example = j["examples"][i];
+                let li = ul.appendChild(document.createElement('li'))
+                let a = li.appendChild(document.createElement('span'))
+                clickify([a])
+                a.onclick = function() {
+                    v3do({"action": "example", "utid": example["utid"]}).then(previewTask)
+                }
+                a.innerText = example["comment"]
+            }
+        }
+        if (j["admin_clars"].length) {
+            appendHTML(holder, '\nRecent reviews from taskset maintaners:\n')
+            let ul = holder.appendChild(document.createElement('ul'))
+            for (let i = 0; i < j["admin_clars"].length; ++ i) {
+                let example = j["admin_clars"][i];
+                let li = ul.appendChild(document.createElement('li'))
+                let a = li.appendChild(document.createElement('span'))
+                let seenSpan = null
+                if (!example['seen']) {
+                    seenSpan = li.appendChild(document.createElement('sup'))
+                    seenSpan.innerHTML = '<b>new</b>'
+                    seenSpan.style.marginLeft = '5px'
+                }
+                clickify([a])
+                a.onclick = function() {
+                    v3do({"action": "view_admin_clar", "utid": example["utid"]}).then(function(x) {
+                        previewTask(x)
+                        if (seenSpan) {
+                            seenSpan.style.display = 'none'
+                        }
+                    })
+                }
+                a.innerText = example["comment"]
+            }
+        }
+    })
+}
+
+function showKYCBanner(welcome, parent_el, tag, prefix) {
+    if (!welcome['kyc']['done']) {
+        parent_el.appendChild(document.createElement('br'))
+        let small = parent_el.appendChild(document.createElement(tag))
+        if (welcome['kyc']['status'] == 'none') {
+            small.innerText = prefix + 'You can do it '
+        } else {
+            small.innerText = prefix + 'Last time we checked it was not completed. Update the status '
+        }
+        let a = small.appendChild(document.createElement('a'))
+        a.innerText = 'here'
+        a.href = welcome['kyc']['loginUrl']
+        small.appendChild(document.createElement('span')).innerText = '.\nClick ';
+        let a2 = small.appendChild(document.createElement('span'))
+        clickify([a2])
+        a2.innerText = 'here'
+        a2.onclick = function() { alert('The way Acadé Studio works naturally involves paying people money. Acade LLC, the company behind Acadé Studio, is a US-based company, and has strict requirements when it comes to whom we can and cannot pay. Therefore, we must use a KYC provider to make sure we do not end up paying folks that we are not supposed to.\nWe use Fractal ID as our KYC provider, a company that worked with many NEAR ecosystem projects. The way we have Fractal configured, none of your information is ever shared with us. They know whom we cannot work with, and at the end of your KYC journey they either give us a green light or a red light, but beyond that Fractal doesn\'t share with us any of your personal information.\nFractal, however, will have to work with your personal information. You should consult with their terms of services and privacy policy to understand how they handle this information.\nNote that we do not share any information you provide to us with Fractal either. In particular, we do not share with them your NEAR address.'); }
+        small.appendChild(document.createElement('span')).innerText = ' to learn why, and the privacy policy information.';
+    }
+}
+
+async function start() {
+    document.body.innerHTML = 'Loading...'
+    let welcome = await v3do({'action': 'welcome'});
+
+    {
+        let params = new URLSearchParams(location.search);
+        if (params.get('code') && params.get('state')) {
+            v3do({'action': 'kyc', 'code': params.get('code'), 'state': params.get('state')}).then(start).catch(errorOut)
+            document.body.innerHTML = 'Updating KYC info...'
+            const url = new URL(window.location.href);
+            url.search = '';
+            window.history.replaceState({}, document.title, url.href);
+            return;
+        }
+    }
+
+    v3HTML(document.body, '<b>' + walletAccount.getAccountId() + '</b>; L' + welcome['level'] + '; Balance: ');
+    let balanceSpan = document.body.appendChild(document.createElement('span'))
+    v3HTML(balanceSpan, formatMicroNear(welcome['balance']).bold())
+    appendHTML(document.body, '; Overhead: ' + formatMicroNear(welcome['overhead_tasks']).bold() + '/' + formatMicroNear(welcome['overhead_reviews']).bold());
+    appendHTML(document.body, " :: Tasks: <b>" + welcome['n_pending_tasks'] + "</b> pending; <b>" + welcome['n_rejected_tasks'] + '</b> rejected; <b>' + welcome['n_challenged_tasks'] + '</b> challenging ');
+
+    if (welcome['last_withdraw'] !== undefined) {
+        window.contract.nonce({'account_id': window.walletAccount.getAccountId()}).then(nonce => { 
+            if (nonce == welcome['last_withdraw'].nonce) {
+                v3HTML(balanceSpan, formatMicroNear(welcome['balance'] + welcome['last_withdraw'].mnear).bold())
+            }
+        })
+    } else {
+    }
+
+    document.body.appendChild(document.createElement('span')).innerText = ' :: '
+    let a1 = document.body.appendChild(document.createElement('span'));
+    document.body.appendChild(document.createElement('span')).innerText = ' :: '
+    let a2 = document.body.appendChild(document.createElement('span'));
+    document.body.appendChild(document.createElement('span')).innerText = ' :: '
+    let a3 = document.body.appendChild(document.createElement('span'));
+    document.body.appendChild(document.createElement('span')).innerText = ' :: '
+    let a4 = document.body.appendChild(document.createElement('span'));
+    document.body.appendChild(document.createElement('span')).innerText = ' :: '
+    let a5 = document.body.appendChild(document.createElement('span'));
+
+    clickify([a1, a2, a3, a4, a5]);
+
+    a1.innerText = 'Withdraw';
+    a2.innerText = 'Overhead Logs';
+    a3.innerText = 'Reports';
+    a4.innerText = 'Docs';
+    a5.innerText = 'Logout';
+
+    if (welcome['active']) {
+        showKYCBanner(welcome, document.body, 'small', 'In order to withdraw balance, you will need to pass KYC. ')
+    }
+
+    document.body.appendChild(document.createElement('br'))
+    let saveStatusHolder = document.body.appendChild(document.createElement('span'));
+    document.body.appendChild(document.createElement('br'))
+
+    let holder = document.body.appendChild(document.createElement('div'))
+
+    a1.onclick = function(e) {
+        let withdraw_to = null;
+        if (e.shiftKey) {
+            withdraw_to = prompt('Withdraw to account:')
+        }
+        a1.style.cursor = 'default';
+        a1.style.color = 'silver';
+        a1.innerHTML = '<i>Withdrawing...</i>';
+        window.contract.nonce({'account_id': window.walletAccount.getAccountId()}).then(nonce => { 
+            let request = {'action': 'withdraw', 'nonce': nonce}
+            if (withdraw_to) {
+                request['withdraw_to'] = withdraw_to;
+            }
+            v3do(request).then(ret => {
+                if (withdraw_to) {
+                    window.contract.withdraw_to({'nonce': nonce, 'extra': ret['extra'], 'mnear': ret['mnear'], 'to': withdraw_to}).then(start).catch(errorOut)
+                } else {
+                    window.contract.withdraw({'nonce': nonce, 'extra': ret['extra'], 'mnear': ret['mnear']}).then(start).catch(errorOut)
+                }
+            })
+        }).catch(errorOut)
+    }
+
+    a2.onclick = function() {
+        v3do({'action': 'overhead_logs'}).then(function(j) { showOverheadLogs(holder, j) })
+    }
+
+    a3.onclick = function() {
+        v3do({'action': 'all_reports'}).then(function(j) { showAllReports(holder, j) })
+    }
+
+    a4.onclick = function() {
+        showDocSelector(createFixedPane(true), welcome['task_id'], welcome['task_name'])
+    }
+
+    a5.onclick = function() {
+        if (confirm('Log out?')) {
+            walletAccount.signOut();
+            window.location.replace(window.location.origin + window.location.pathname);
+        }
+    }
+
+    if (welcome['state'] == 'free') {
+        appendHTML(holder, 'Task: <b>' + welcome['task_name'] + '</b> ');
+        let changeA = holder.appendChild(document.createElement('span'))
+        clickify([changeA])
+        changeA.innerText = 'Change'
+        changeA.onclick = function() { v3do({'action': 'change_task_list'}).then(showChangeTaskList) }
+
+        if (welcome['task_id'] < 400) {
+            appendHTML(holder, "\nОТО временно приостановлен. Вероятнее всего, ОТО снова запустится через некоторое время, в немного ином формате. Анонс будет сделан в https://t.me/NEAR_annotation.")
+        }
+
+        appendHTML(holder, '\nBase reward: ' + formatMicroNear(welcome['base_mnear']) + '\n\n');
+        let btn = holder.appendChild(document.createElement('button'));
+        btn.innerText = 'Get an Assignment';
+        btn.onclick = function() {
+            if (!window.localStorage.getItem('v3noplugin')) {
+                alert('Please read the "Important: rules and policies" section before getting an assignment');
+            } else if (window.localStorage.getItem('v3noplugin') != NOPLUGIN_VERSION) {
+                alert('The "Important: rules and policies" section has been updated. Please read the new version before applying for an assignment.');
+            } else {
+                window.localStorage.setItem('v3editorsaved', '')
+                v3do({'action': 'get_assignment'}).then(start) 
+            }
+        }
+
+        if (welcome['pillar_set'] !== undefined && welcome['level'] >= welcome['pillar_set']['min_pillar_edit_level']) {
+            let btn2 = holder.appendChild(document.createElement('button'))
+            btn2.style.marginLeft = '10px'
+            btn2.innerText = 'Edit Curriculum'
+            delayedButton(btn2, '#F0F0F0', '#D0D0D0', function() { alert(0) })
+        }
+
+        if (!welcome['active']) {
+            btn.disabled = 'true';
+            showKYCBanner(welcome, holder, 'span', 'You need to go through KYC before getting an assignment. ')
+        }
+
+        if (welcome['n_rejected_tasks'] > 0) {
+            appendHTML(holder, '\n\nYou can also work on fixing or challenge one of your rejected tasks or accepted honeypots:\n');
+            for (let i = 0; i < welcome['rejected_tasks'].length; ++ i) {
+                appendHTML(holder, '<b>' + (i + 1) + ": </b> " + welcome['rejected_tasks'][i]['task_name'] + "; Will be abandoned in ");
+                addTimer(holder, welcome['rejected_tasks'][i]['expires_in'], function() { })
+
+                let a1 = holder.appendChild(document.createElement('span'));
+                let a2 = holder.appendChild(document.createElement('span'));
+                let a3 = holder.appendChild(document.createElement('span'));
+                clickify([a1, a2, a3])
+                a1.innerText = 'Preview'
+                a2.innerText = 'Challenge'
+                a3.innerText = 'Work on fixing'
+                a1.style.paddingLeft = '10px'
+                a2.style.paddingLeft = '10px'
+                a3.style.paddingLeft = '10px'
+
+                if (welcome['rejected_tasks'][i]['is_honeypot']) {
+                    a3.style.display = 'none'
+                    let s = holder.appendChild(document.createElement('span'))
+                    s.innerText = '🍯'
+                    s.style.paddingLeft = '10px'
+                }
+
+                a1.onclick = function() { v3do({"action": "preview_rejected", "utid": welcome['rejected_tasks'][i]['utid']}).then(previewTask) }
+                a2.onclick = function() {
+                    let challengePane = createFixedPane(true);
+                    if (welcome['rejected_tasks'][i]['is_honeypot']) {
+                        appendHTML(challengePane, '\n\nThe reviewer interface of the participants who will review your challenge is the same for regular and honeypot tasks. Make it very clear that the task was a honeypot, and that you challenge its Acceptance, not Rejection, in your comment below.')
+                    }
+                    appendHTML(challengePane, '\n\nAre you sure you want to challenge? If the challenge is unsuccessful, you will incur one review worth of overhead.\n\nIf you are sure, provide a detailed reason for the challenge:\n')
+                    let reason = window.localStorage.getItem('v3editorsaved') || '';
+                    let translateSpan;
+                    if (welcome['task']['is_multiling']) {
+                        translateSpan = challengePane.appendChild(document.createElement('span'));
+                        appendHTML(challengePane, '\n')
+                    }
+                    let rejectEditor = createEditorCell(challengePane, reason, null, {'saveCallback': function(x) { reason = x; window.localStorage.setItem('v3editorsaved', x) }})
+                    if (welcome['task']['is_multiling']) {
+                        rejectEditor.add_translate_elems(translateSpan);
+                    }
+
+                    let challengeBtn = challengePane.appendChild(document.createElement('button'));
+                    challengeBtn.style.backgroundColor = '#F0F0F0'
+                    challengeBtn.innerText = 'Challenge'
+                    delayedButton(challengeBtn, '#F0F0F0', '#D0D0D0', function() {
+                        challengeBtn.disabled = true;
+                        v3do({"action": "challenge", "utid": welcome['rejected_tasks'][i]['utid'], "comment": reason}).then(start)
+                    })
+                }
+                a3.onclick = function() {
+                    if (confirm('Are you sure you want to work on fixing this submission? You will no longer be able to challenge the rejection.')) {
+                        v3do({"action": "work_on_fixing", "utid": welcome['rejected_tasks'][i]['utid']}).then(start)
+                    }
+                }
+
+                appendHTML(holder, '\n')
+            }
+        }
+
+        if (welcome['pillar_set'] !== undefined) {
+            appendHTML(holder, '\n\n')
+            let editor = holder.appendChild(document.createElement('div'))
+            editor.style.position = 'relative';
+            editor.style.left = '0px'
+            editor.style.top = '0px'
+            editor.style.border = '1px solid black'
+            editor.style.backgroundColor = 'white'
+            editor.style.boxSizing = 'border-box'
+
+            let hintbar = holder.appendChild(document.createElement('div'))
+            let editbar = holder.appendChild(document.createElement('div'))
+
+            hintbar.style.position = 'absolute'
+            hintbar.style.border = '1px solid black'
+            hintbar.style.boxSizing = 'border-box'
+            hintbar.style.overflow = 'hidden'
+            hintbar.style.padding = '5px'
+            hintbar.style.backgroundColor = '#F0F0F0'
+            editbar.style.position = 'absolute'
+            editbar.style.border = '1px solid black'
+            editbar.style.boxSizing = 'border-box'
+            editbar.style.overflow = 'scroll'
+            editbar.style.padding = '5px'
+            editbar.style.backgroundColor = '#F8F8F8'
+
+            let pillarSetEditor = createV3PillarSetEditor(editor, welcome['pillar_set']['pset'], {'readonly': true, 'hintbar': hintbar, 'editor': editbar});
+
+            let reposition = function() {
+                if (!document.body.contains(editor)) { return }
+                let h = window.innerHeight - editor.offsetTop - 10
+                let w = window.innerWidth - 2 * editor.offsetLeft
+
+                const toolbarWidth = Math.min(400, Math.floor(w / 2))
+
+                editor.style.width = w - toolbarWidth + 1 + 'px'
+                editor.style.height = h + 'px'
+                hintbar.style.top = editor.offsetTop + 'px'
+                hintbar.style.right = editor.offsetLeft + 'px'
+                hintbar.style.height = Math.floor(h / 3) + 1 + 'px'
+                hintbar.style.width = toolbarWidth + 'px'
+                editbar.style.top = editor.offsetTop + Math.floor(h / 3) + 'px'
+                editbar.style.height = h - Math.floor(h / 3) + 'px'
+                editbar.style.right = editor.offsetLeft + 'px'
+                editbar.style.width = toolbarWidth + 'px'
+                pillarSetEditor.onresize()
+            }
+
+            window.addEventListener('resize', reposition)
+            requestAnimationFrame(reposition)
+        } else {
+            showDocSelector(holder, welcome['task_id'], welcome['task_name']);
+        }
+    } else if (welcome['state'] == 'banned') {
+        appendHTML(holder, 'Your account is suspended');
+        if (welcome['utid']) {
+            appendHTML(holder, ' for ')
+            let t = holder.appendChild(document.createElement('span'));
+            clickify([t])
+            t.innerText = 'this'
+            t.onclick = function() { v3do({'action': 'show_ban_reason'}).then(previewTask) }
+            appendHTML(holder, ' task.\n\nYour account will remain suspended for ')
+            addTimer(holder.appendChild(document.createElement('span')), welcome['state_change_in'], function() {})
+        } else {
+            appendHTML(holder, '.')
+        }
+    } else if (welcome['state'] == 'task' || welcome['state'] == 'honey') {
+        let saveState = {'version': welcome['task']['version'], 'saveStatusHolder': saveStatusHolder, 'queue': [], 'delayed': null, 'saving': false, 'tm': null}
+
+        if (welcome['state'] == 'task') {
+            let timer = addTimer(holder.appendChild(document.createElement('small')), welcome['state_change_in'], function() {})
+            timer.style.paddingRight = '10px';
+        } else if (welcome['state'] == 'honey') {
+            let s = holder.appendChild(document.createElement('span'));
+            s.innerText = 'Please create a honeypot out of this work! Modify it slightly in such a way that it must be rejected.\n';
+            s.style.color = '#A03A77';
+        }
+
+        if (welcome['reward'] != 0) {
+            let b = holder.appendChild(document.createElement('b'));
+            b.style.paddingRight = '10px'
+            b.innerText = formatMicroNear(welcome['reward'])
+        }
+
+        let submitBtn = holder.appendChild(document.createElement('button'));
+        submitBtn.innerText = 'Submit for Review';
+
+        if (welcome['state'] == 'task') {
+            let abandonBtn = holder.appendChild(document.createElement('button'));
+            abandonBtn.innerText = 'Abandon';
+            abandonBtn.style.marginLeft = '5px'
+            abandonBtn.style.backgroundColor = '#F0F0F0'
+
+            let invalidBtn = holder.appendChild(document.createElement('button'));
+            invalidBtn.innerText = 'Invalid Task';
+            invalidBtn.style.marginLeft = '5px'
+            invalidBtn.style.backgroundColor = '#F0F0F0'
+
+            let abandonClickedOnce = false;
+            if (!window.localStorage.getItem('v3seenabandonmsg')) {
+                abandonBtn.onclick = function() {
+                    if (!abandonClickedOnce) {
+                        alert('If you abandon the task, all your work (if any) on this task will be lost, and an overhead equal to 30% of the task reward will be incurred. If you sure you want to abandon it, press and hold the Abandon button again.');
+                        window.localStorage.setItem('v3seenabandonmsg', true)
+                        abandonClickedOnce = true;
+                    }
+                    delayedButton(abandonBtn, '#F0F0F0', '#D0D0D0', function() { v3do({"action": "abandon_task"}).then(start) })
+                }
+            } else {
+                delayedButton(abandonBtn, '#F0F0F0', '#D0D0D0', function() { v3do({"action": "abandon_task"}).then(start) })
+            }
+
+            invalidBtn.onclick = function() {
+                let reason = prompt("Reason:")
+                if (reason) {
+                    v3do({"action": "mark_task_invalid", "reason": reason}).then(start)
+                }
+            }
+        }
+
+        let submitHandler = function(e) {
+            if (saveState.delayed || saveState.queue.length != 0) {
+                alert('Some changes have not been saved. Try again in a second.');
+            } else {
+                let comment = '';
+                if (e && (e.ctrlKey || e.metaKey)) {
+                    comment = prompt("Enter the comment:")
+                    if (!comment) {
+                        return;
+                    }
+                }
+                submitBtn.disabled = true;
+                v3do({"action": "submit_for_review", "comment": comment}).then(x => {
+                    if (x['submission_error']) {
+                        alert(x['submission_error']);
+                        submitBtn.disabled = false;
+                    } else {
+                        start()
+                    }
+                });
+            }
+        }
+
+        delayedButton(submitBtn, '#F0F0F0', '#D0D0D0', submitHandler, submitHandler);
+
+        showTask(holder, welcome['task_id'], welcome['task'], false, saveState)
+    } else if (welcome['state'] == 'review') {
+        let timer = addTimer(holder.appendChild(document.createElement('small')), welcome['state_change_in'], function() {})
+        timer.style.paddingRight = '10px';
+
+        if (welcome['reward'] != 0) {
+            let b = holder.appendChild(document.createElement('b'));
+            b.style.paddingRight = '10px'
+            b.innerText = formatMicroNear(welcome['reward'])
+        }
+
+        if (!welcome['task']['challenge_comment']) { // regular review
+            let acceptBtn = holder.appendChild(document.createElement('button'));
+            let rejectSpan = holder.appendChild(document.createElement('div'));
+            rejectSpan.innerHTML = '<br><b>Reason:</b><br>'
+            let translateSpan = rejectSpan.appendChild(document.createElement('span'));
+            appendHTML(rejectSpan, '\n')
+            let reason = window.localStorage.getItem('v3editorsaved') || '';
+            let rejectEditor = createEditorCell(rejectSpan, reason, null, {saveCallback: function(x) { reason = x; window.localStorage.setItem('v3editorsaved', x) }})
+            if (welcome['task']['is_multiling']) {
+                rejectEditor.add_translate_elems(translateSpan)
+            }
+            rejectSpan.appendChild(document.createElement('br'));
+            rejectSpan.style.display = 'none';
+            let rejectSpanShown = false;
+            let rejectBtn = holder.appendChild(document.createElement('button'));
+            acceptBtn.style.marginRight = '10px'
+            acceptBtn.innerText = 'Accept'
+            rejectBtn.innerText = 'Reject'
+            rejectBtn.style.backgroundColor = '#FFD0DD'
+
+            delayedButton(acceptBtn, '#F0FFF0', '#C0EEC0', function() { acceptBtn.disabled = true; rejectBtn.disabled = true; v3do({"action": "submit_review", "verdict": 1}).then(function(j) {
+                window.localStorage.setItem('v3editorsaved', '')
+                if (j['was_honey'] && !j['was_challenge']) {
+                    alert('This review was a honeypot. The honeypot author will have an option to challenge your acceptance. If the challenge is successful, an overhead equal to the full reward for 6 reviews. Be vigilant during reviews!');
+                }
+                start()
+            }) })
+            rejectBtn.onclick = function() {
+                if (!rejectSpanShown) {
+                    rejectSpanShown = true;
+                    rejectSpan.style.display = '';
+                    rejectEditor.reposition()
+                    delayedButton(rejectBtn, '#FFD0DD', '#FFB0CC', function() { if (!reason.trim()) { alert("Provide reason for rejection"); return } acceptBtn.disabled = true; rejectBtn.disabled = true; v3do({"action": "submit_review", "verdict": 0, "comment": reason}).then(function() {
+                            window.localStorage.setItem('v3editorsaved', '')
+                            start()
+                        })
+                    })
+                }
+            }
+        } else {
+            let reasonSpan = holder.appendChild(document.createElement('div'));
+            reasonSpan.innerHTML = '<br><b>Reason:</b>'
+            let translateSpan = reasonSpan.appendChild(document.createElement('span'));
+            appendHTML(reasonSpan, '\n')
+            let reason = window.localStorage.getItem('v3editorsaved') || '';
+            let reasonEditor = createEditorCell(reasonSpan, reason, null, {'saveCallback': function(x) { reason = x; window.localStorage.setItem('v3editorsaved', x) }})
+            if (welcome['task']['is_multiling']) {
+                reasonEditor.add_translate_elems(translateSpan)
+            }
+            reasonSpan.appendChild(document.createElement('br'));
+            reasonSpan.style.display = 'none';
+            let reasonSpanShown = false;
+
+            let agreeBtn = holder.appendChild(document.createElement('button'));
+            let disagreeBtn = holder.appendChild(document.createElement('button'));
+            agreeBtn.style.marginRight = '10px'
+            agreeBtn.innerText = 'Challenger is Correct'
+            disagreeBtn.innerText = 'Reviewer is Correct'
+
+            let buttons = [agreeBtn, disagreeBtn];
+            let originalColors = ['#F0FFF0', '#FFD0DD'];
+            let finalColors = ['#C0EEC0', '#FFB0CC'];
+
+            for (let btnI = 0; btnI < 2; ++ btnI) {
+                buttons[btnI].style.backgroundColor = originalColors[btnI];
+
+                buttons[btnI].onclick = function() {
+                    if (!reasonSpanShown) {
+                        reasonSpanShown = true;
+                        reasonSpan.style.display = '';
+                        reasonEditor.reposition()
+                        for (let i = 0; i < 2; ++ i) {
+                            delayedButton(buttons[i], originalColors[i], finalColors[i], function() { if (!reason.trim()) { alert("Provide reason for your review"); return } agreeBtn.disabled = true; disagreeBtn.disabled = true; v3do({"action": "submit_review", "verdict": (1 + i + welcome['task']['is_honeypot']) % 2, "comment": reason}).then(function() {
+                                    window.localStorage.setItem('v3editorsaved', '')
+                                    start()
+                                })
+                            })
+                        }
+                    }
+                }
+            }
+        }
+
+        showTask(holder, welcome['task_id'], welcome['task'], true, null)
+    } else if (welcome['state'] == 'review_report') {
+        let timer = addTimer(holder.appendChild(document.createElement('small')), welcome['state_change_in'], function() {})
+        timer.style.paddingRight = '10px';
+
+        if (welcome['reward'] != 0) {
+            let b = holder.appendChild(document.createElement('b'));
+            b.style.paddingRight = '10px'
+            b.innerText = formatMicroNear(welcome['reward'])
+        }
+
+        appendHTML(holder, "Report Review\n\nPlease review the following report. According to the reporter ");
+        if (welcome['report']['whom'] == 'author') {
+            appendHTML(holder, "<b>author of the task</b> hasn't done their work properly.");
+        } else if (welcome['report']['whom'] == 'reviewer') {
+            appendHTML(holder, "<b>the last reviewer</b> hasn't done their review properly.");
+        } else if (welcome['report']['whom'] == 'challengers') {
+            appendHTML(holder, "the participants that <b>reviewed the challenge</b> haven't done their work properly.");
+        } else if (welcome['report']['whom'] == 'specific') {
+            appendHTML(holder, "a <b>specific reviewer (highlighted in the list of reviewers)</b> hasn't done their work properly.");
+        }
+        appendHTML(holder, "\nHere's the raionale provided by the reporter:\n");
+        let rationaleHolder = holder.appendChild(document.createElement('div'));
+        rationaleHolder.style.border = '1px solid black'
+        rationaleHolder.style.borderRadius = '5px'
+        rationaleHolder.style.padding = '10px'
+        v3HTML(rationaleHolder, welcome['report']['comment'])
+
+        let reasonSpan = holder.appendChild(document.createElement('div'));
+        reasonSpan.innerHTML = '<br><b>Reason:</b>'
+        let translateSpan = reasonSpan.appendChild(document.createElement('span'));
+        appendHTML(reasonSpan, '\n')
+        let reason = window.localStorage.getItem('v3editorsaved') || '';
+        let reasonEditor = createEditorCell(reasonSpan, reason, null, {'saveCallback': function(x) { reason = x; window.localStorage.setItem('v3editorsaved', x) }})
+        if (welcome['task']['is_multiling']) {
+            reasonEditor.add_translate_elems(translateSpan)
+        }
+        reasonSpan.appendChild(document.createElement('br'));
+        reasonSpan.style.display = 'none';
+        let reasonSpanShown = false;
+
+        let buttons = [];
+        let outcomes = [1, 0, 2, 3, 4, 5, 6]
+        let texts = reportVerdicts;
+        let originalColors = ['#F0FFF0', '#F0FFF0', '#FFD0DD', '#FFD0DD', '#FFD0DD', '#FFD0DD', '#FFD0DD'];
+        let finalColors = ['#C0EEC0', '#C0EEC0', '#FFB0CC', '#FFB0CC', '#FFB0CC', '#FFB0CC', '#FFB0CC'];
+
+        for (let btnI = 0; btnI < outcomes.length; ++ btnI) {
+            if (btnI == 0) {
+                appendHTML(holder, "\nReporter is wrong; Reporter deserves: ");
+            } else if (btnI == 2) {
+                appendHTML(holder, "\n\nReporter is right; Reportees deserve: ");
+            }
+            let btn = holder.appendChild(document.createElement('button'));
+            btn.style.marginRight = '10px'
+            btn.innerText = texts[outcomes[btnI]];
+            buttons.push(btn);
+
+            buttons[btnI].style.backgroundColor = originalColors[btnI];
+
+            buttons[btnI].onclick = function() {
+                if (!reasonSpanShown) {
+                    reasonSpanShown = true;
+                    reasonSpan.style.display = '';
+                    reasonEditor.reposition()
+                    for (let i = 0; i < outcomes.length; ++ i) {
+                        delayedButton(buttons[i], originalColors[i], finalColors[i], function() { if (!reason.trim()) { alert("Provide reason for your review"); return } for (let j = 0; j < outcomes.length; ++ j) buttons[j].disabled = true; v3do({"action": "submit_report_review", "verdict": outcomes[i], "comment": reason}).then(function() {
+                                window.localStorage.setItem('v3editorsaved', '')
+                                start()
+                            })
+                        })
+                    }
+                }
+            }
+        }
+
+        appendHTML(holder, "\n");
+        showTask(holder, welcome['task_id'], welcome['task'], true, null)
+    } else if (welcome['state'] == 'admin_review') {
+        appendHTML(holder, 'Short comment: ');
+        let shortComment = holder.appendChild(document.createElement('input'))
+        shortComment.style.width = '500px'
+        appendHTML(holder, '\nLong comment: \n');
+        let longComment = holder.appendChild(document.createElement('textarea'))
+        longComment.rows = 5; longComment.cols = 100;
+        appendHTML(holder, '\n');
+        function btn(t) {
+            let b = holder.appendChild(document.createElement('button'));
+            b.innerText = t;
+            b.onclick = function() { v3do({'action': 'admin_review', 'do': t, 'short': shortComment.value, 'long': longComment.value}).then(start) }
+        }
+        btn('Send'); btn('Skip'); btn('Done'); btn('Ban All'); btn('Ban Author')
+        showTask(holder, welcome['task_id'], welcome['task'], true, null)
+    } else {
+        errorOut('Unknown state ' + welcome['state']);
+    }
+}
+
+function showChangeTaskList(j) {
+    let pane = createFixedPane(true);
+    appendHTML(pane, "\n\n<b>Available Tasks:</b>")
+    let ul = pane.appendChild(document.createElement('ul'))
+    for (let i = 0; i < j['tasksets'].length; ++ i) {
+        let taskset = j['tasksets'][i]
+        let li = ul.appendChild(document.createElement('li'));
+        let link = li.appendChild(document.createElement('span'));
+        clickify([link])
+        link.innerText = taskset['task_name']
+        link.onclick = function() { v3do({'action': 'change_task', 'task_id': taskset['task_id']}).then(start) }
+        appendHTML(li, ' (L: ' + taskset['level'] + '; overhead for tasks: ' + formatMicroNear(taskset['overhead_tasks']) + '; overhead for reviews: ' + formatMicroNear(taskset['overhead_reviews']) + '; Base reward: ' + formatMicroNear(taskset['mnear_per_task']) + '; Daily limit ' + formatMicroNear(taskset['daily_limit']) + ')');
+
+        let drop_overhead_btn = li.appendChild(document.createElement('span'))
+        drop_overhead_btn.classList.add('hidden-unless-ctrl-alt');
+        drop_overhead_btn.style.marginLeft = '10px'
+        drop_overhead_btn.innerText = '[remove overhead and leave]'
+        clickify([drop_overhead_btn])
+        drop_overhead_btn.onclick = function() {
+            if (confirm('READ CAREFULLY!\n\nIf you continue, the following will happen:\n1. You will no longer be able to participate in this taskset, and you will never be able to join it again from this account;\n2. The value equal to twice the overhead will be subtracted from your balance.\n\nDo you want to conitnue?')) {
+                v3do({'action': 'postponed_subtract_overhead', 'task_id': taskset['task_id']}).then(start)
+            }
+        }
+    }
+}
+
+window.onload = function() {
+    window.nearInitPromise = connect()
+        .catch(console.error);
+}
+
+function isCtrlAltPressed(event) {
+    return (event.ctrlKey || event.metaKey) && event.altKey;
+}
+
+document.addEventListener('keydown', (event) => {
+    if (isCtrlAltPressed(event)) {
+        document.body.classList.add('ctrl-alt-pressed');
+    }
+})
+
+document.addEventListener('keyup', (event) => {
+    if (!isCtrlAltPressed(event)) {
+        document.body.classList.remove('ctrl-alt-pressed');
+    }
+})
+
